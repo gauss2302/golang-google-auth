@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"googleAuth/internal/config"
 	"googleAuth/internal/domain"
@@ -29,6 +30,34 @@ func NewAuthService(cfg *config.Config, userRepo domain.UserRepository, sessionR
 		userRepo:    userRepo,
 		sessionRepo: sessionRepo,
 	}
+}
+
+// internal/service/auth_service.go - Add these methods
+func (s *authService) StoreTemporaryAuth(authCode string, authResult *domain.AuthResult, expiration time.Duration) error {
+	authResultJSON, err := json.Marshal(authResult)
+	if err != nil {
+		return err
+	}
+
+	return s.sessionRepo.StoreTemporaryAuth(context.Background(), authCode, string(authResultJSON), expiration)
+}
+
+func (s *authService) ExchangeAuthCode(authCode string) (*domain.AuthResult, error) {
+	authData, err := s.sessionRepo.GetTemporaryAuth(context.Background(), authCode)
+	if err != nil {
+		return nil, err
+	}
+
+	if authData == "" {
+		return nil, fmt.Errorf("invalid or expired auth code")
+	}
+
+	var authResult domain.AuthResult
+	if err := json.Unmarshal([]byte(authData), &authResult); err != nil {
+		return nil, err
+	}
+
+	return &authResult, nil
 }
 
 func (s *authService) GenerateTokenPair(userID uuid.UUID, userAgent, ipAddress string) (*domain.TokenPair, error) {

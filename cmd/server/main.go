@@ -62,7 +62,7 @@ func main() {
 	oauthService := service.NewOAuthService(cfg, userRepo)
 	authService := service.NewAuthService(cfg, userRepo, sessionRepo)
 
-	authHandler := handler.NewAuthHandler(oauthService, authService, userRepo)
+	authHandler := handler.NewAuthHandler(oauthService, authService, userRepo, cfg)
 	userHandler := handler.NewUserHandler(userRepo)
 
 	router := setupRouter(cfg, authHandler, userHandler, rateLimiter, csrfProtection)
@@ -136,6 +136,7 @@ func setupRouter(cfg *config.Config, authHandler *handler.AuthHandler, userHandl
 			// Token management (requires CSRF protection)
 			auth.POST("/refresh", csrfProtection.GinMiddleware(), authHandler.RefreshToken)
 			auth.POST("/logout", csrfProtection.GinMiddleware(), middleware.AuthMiddleware(cfg.JWTSecret), authHandler.Logout)
+			auth.POST("/exchange-code", csrfProtection.GinMiddleware(), authHandler.ExchangeAuthCode)
 
 			// Session management (requires auth + CSRF)
 			auth.GET("/sessions", middleware.AuthMiddleware(cfg.JWTSecret), authHandler.GetSessions)

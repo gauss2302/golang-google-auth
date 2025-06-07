@@ -166,3 +166,24 @@ func (r *sessionRepository) UpdateLastUsed(ctx context.Context, sessionID string
 	session.LastUsedAt = time.Now()
 	return r.Update(ctx, session)
 }
+
+func (r *sessionRepository) StoreTemporaryAuth(ctx context.Context, authCode, authData string, expiration time.Duration) error {
+	key := fmt.Sprintf("temp_auth:%s", authCode)
+	return r.client.Set(ctx, key, authData, expiration).Err()
+}
+
+func (r *sessionRepository) GetTemporaryAuth(ctx context.Context, authCode string) (string, error) {
+	key := fmt.Sprintf("temp_auth:%s", authCode)
+	result, err := r.client.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+
+	// Delete after retrieval (one-time use)
+	r.client.Del(ctx, key)
+
+	return result, nil
+}

@@ -38,3 +38,8 @@ type Session struct {
 	UserAgent    string    `json:"user_agent"`
 	IPAddress    string    `json:"ip_address"`
 }
+
+type AuthResult struct {
+	User   *User      `json:"user"`
+	Tokens *TokenPair `json:"tokens"`
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
+	"time"
 )
 
 type UserRepository interface {
@@ -23,6 +24,9 @@ type SessionRepository interface {
 	Delete(ctx context.Context, sessionID string) error
 	DeleteByUserID(ctx context.Context, userID uuid.UUID) error
 	UpdateLastUsed(ctx context.Context, sessionID string) error
+
+	StoreTemporaryAuth(ctx context.Context, authCode, authData string, expiration time.Duration) error
+	GetTemporaryAuth(ctx context.Context, authCode string) (string, error)
 }
 
 type OAuthService interface {
@@ -38,4 +42,7 @@ type AuthService interface {
 	RevokeSession(sessionID string) error
 	GetUserSessions(userID uuid.UUID) ([]*Session, error)
 	RevokeAllUserSessions(userID uuid.UUID) error
+	// Add these new methods
+	StoreTemporaryAuth(authCode string, authResult *AuthResult, expiration time.Duration) error
+	ExchangeAuthCode(authCode string) (*AuthResult, error)
 }

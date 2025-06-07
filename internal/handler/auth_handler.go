@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"fmt"
+	"googleAuth/internal/config"
 	"googleAuth/internal/domain"
 	"net/http"
 	"time"
@@ -13,13 +15,15 @@ type AuthHandler struct {
 	oauthService domain.OAuthService
 	authService  domain.AuthService
 	userRepo     domain.UserRepository
+	config       *config.Config
 }
 
-func NewAuthHandler(oauthService domain.OAuthService, authService domain.AuthService, userRepo domain.UserRepository) *AuthHandler {
+func NewAuthHandler(oauthService domain.OAuthService, authService domain.AuthService, userRepo domain.UserRepository, cfg *config.Config) *AuthHandler {
 	return &AuthHandler{
 		oauthService: oauthService,
 		authService:  authService,
 		userRepo:     userRepo,
+		config:       cfg,
 	}
 }
 
@@ -32,13 +36,15 @@ func (h *AuthHandler) GoogleAuth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"auth_url": url})
 }
 
+// internal/handler/auth_handler.go
 func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	state := c.Query("state")
 	code := c.Query("code")
 
 	storedState, err := c.Cookie("oauth_state")
 	if err != nil || state != storedState {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid state parameter"})
+		frontendURL := fmt.Sprintf("%s/auth/login?error=invalid_state", h.config.FrontendURL)
+		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 		return
 	}
 
@@ -46,26 +52,28 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 
 	token, err := h.oauthService.ExchangeCode(c.Request.Context(), code)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code"})
+		frontendURL := fmt.Sprintf("%s/auth/login?error=exchange_failed", h.config.FrontendURL)
+		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 		return
 	}
 
 	userInfo, err := h.oauthService.GetUserInfo(c.Request.Context(), token)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user info"})
+		frontendURL := fmt.Sprintf("%s/auth/login?error=userinfo_failed", h.config.FrontendURL)
+		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 		return
 	}
 
 	// Check if user exists, if not create new user
 	existingUser, err := h.userRepo.GetByGoogleID(c.Request.Context(), userInfo.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		frontendURL := fmt.Sprintf("%s/auth/login?error=database_error", h.config.FrontendURL)
+		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 		return
 	}
 
 	var user *domain.User
 	if existingUser == nil {
-		// Create new user
 		user = &domain.User{
 			ID:        uuid.New(),
 			GoogleID:  userInfo.ID,
@@ -77,7 +85,8 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 		}
 
 		if err := h.userRepo.Create(c.Request.Context(), user); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+			frontendURL := fmt.Sprintf("%s/auth/login?error=user_creation_failed", h.config.FrontendURL)
+			c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 			return
 		}
 	} else {
@@ -89,13 +98,47 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 
 	tokenPair, err := h.authService.GenerateTokenPair(user.ID, userAgent, ipAddress)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate tokens"})
+		frontendURL := fmt.Sprintf("%s/auth/login?error=token_generation_failed", h.config.FrontendURL)
+		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
+		return
+	}
+
+	// Generate secure auth code and store result via service
+	authCode := uuid.New().String()
+	authResult := &domain.AuthResult{
+		User:   user,
+		Tokens: tokenPair,
+	}
+
+	if err := h.authService.StoreTemporaryAuth(authCode, authResult, 5*time.Minute); err != nil {
+		frontendURL := fmt.Sprintf("%s/auth/login?error=storage_failed", h.config.FrontendURL)
+		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
+		return
+	}
+
+	frontendURL := fmt.Sprintf("%s/auth/callback?auth_code=%s", h.config.FrontendURL, authCode)
+	c.Redirect(http.StatusTemporaryRedirect, frontendURL)
+}
+
+func (h *AuthHandler) ExchangeAuthCode(c *gin.Context) {
+	var req struct {
+		AuthCode string `json:"auth_code" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	authResult, err := h.authService.ExchangeAuthCode(req.AuthCode)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired auth code"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"user":   user,
-		"tokens": tokenPair,
+		"user":   authResult.User,
+		"tokens": authResult.Tokens,
 	})
 }
 
