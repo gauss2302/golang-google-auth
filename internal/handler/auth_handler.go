@@ -12,35 +12,33 @@ import (
 )
 
 type AuthHandler struct {
-	oauthService domain.OAuthService
-	authService  domain.AuthService
-	userRepo     domain.UserRepository
-	config       *config.Config
+	authService domain.AuthenticationService
+	config      *config.Config
 }
 
-func NewAuthHandler(oauthService domain.OAuthService, authService domain.AuthService, userRepo domain.UserRepository, cfg *config.Config) *AuthHandler {
+func NewAuthHandler(authService domain.AuthenticationService, cfg *config.Config) *AuthHandler {
 	return &AuthHandler{
-		oauthService: oauthService,
-		authService:  authService,
-		userRepo:     userRepo,
-		config:       cfg,
+		authService: authService,
+		config:      cfg,
 	}
 }
 
 func (h *AuthHandler) GoogleAuth(c *gin.Context) {
 	state := uuid.New().String()
 
+	// Устанавливаем cookie с state для CSRF защиты
 	c.SetCookie("oauth_state", state, 600, "/", "", false, true)
 
-	url := h.oauthService.GetAuthURL(state)
+	// Используем новый сервис
+	url := h.authService.InitiateGoogleAuth(state)
 	c.JSON(http.StatusOK, gin.H{"auth_url": url})
 }
 
-// internal/handler/auth_handler.go
 func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	state := c.Query("state")
 	code := c.Query("code")
 
+	// Проверяем state для защиты от CSRF
 	storedState, err := c.Cookie("oauth_state")
 	if err != nil || state != storedState {
 		frontendURL := fmt.Sprintf("%s/auth/login?error=invalid_state", h.config.FrontendURL)
@@ -48,74 +46,37 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 		return
 	}
 
+	// Очищаем state cookie
 	c.SetCookie("oauth_state", "", -1, "/", "", false, true)
 
-	token, err := h.oauthService.ExchangeCode(c.Request.Context(), code)
-	if err != nil {
-		frontendURL := fmt.Sprintf("%s/auth/login?error=exchange_failed", h.config.FrontendURL)
-		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
-		return
-	}
-
-	userInfo, err := h.oauthService.GetUserInfo(c.Request.Context(), token)
-	if err != nil {
-		frontendURL := fmt.Sprintf("%s/auth/login?error=userinfo_failed", h.config.FrontendURL)
-		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
-		return
-	}
-
-	// Check if user exists, if not create new user
-	existingUser, err := h.userRepo.GetByGoogleID(c.Request.Context(), userInfo.ID)
-	if err != nil {
-		frontendURL := fmt.Sprintf("%s/auth/login?error=database_error", h.config.FrontendURL)
-		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
-		return
-	}
-
-	var user *domain.User
-	if existingUser == nil {
-		user = &domain.User{
-			ID:        uuid.New(),
-			GoogleID:  userInfo.ID,
-			Email:     userInfo.Email,
-			Name:      userInfo.Name,
-			Picture:   userInfo.Picture,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-		}
-
-		if err := h.userRepo.Create(c.Request.Context(), user); err != nil {
-			frontendURL := fmt.Sprintf("%s/auth/login?error=user_creation_failed", h.config.FrontendURL)
-			c.Redirect(http.StatusTemporaryRedirect, frontendURL)
-			return
-		}
-	} else {
-		user = existingUser
-	}
-
+	// Получаем информацию о пользователе и клиенте
 	userAgent := c.GetHeader("User-Agent")
 	ipAddress := c.ClientIP()
 
-	tokenPair, err := h.authService.GenerateTokenPair(user.ID, userAgent, ipAddress)
+	// Вся сложная логика теперь инкапсулирована в сервисе
+	authResult, err := h.authService.CompleteGoogleAuth(
+		c.Request.Context(),
+		code,
+		state,
+		userAgent,
+		ipAddress,
+	)
 	if err != nil {
-		frontendURL := fmt.Sprintf("%s/auth/login?error=token_generation_failed", h.config.FrontendURL)
+		// Логируем ошибку и перенаправляем пользователя
+		frontendURL := fmt.Sprintf("%s/auth/login?error=auth_failed", h.config.FrontendURL)
 		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 		return
 	}
 
-	// Generate secure auth code and store result via service
+	// Генерируем безопасный auth code для обмена на фронтенде
 	authCode := uuid.New().String()
-	authResult := &domain.AuthResult{
-		User:   user,
-		Tokens: tokenPair,
-	}
-
 	if err := h.authService.StoreTemporaryAuth(authCode, authResult, 5*time.Minute); err != nil {
 		frontendURL := fmt.Sprintf("%s/auth/login?error=storage_failed", h.config.FrontendURL)
 		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 		return
 	}
 
+	// Перенаправляем на фронтенд с временным кодом
 	frontendURL := fmt.Sprintf("%s/auth/callback?auth_code=%s", h.config.FrontendURL, authCode)
 	c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 }
@@ -130,6 +91,7 @@ func (h *AuthHandler) ExchangeAuthCode(c *gin.Context) {
 		return
 	}
 
+	// Обмениваем временный код на результат аутентификации
 	authResult, err := h.authService.ExchangeAuthCode(req.AuthCode)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired auth code"})
@@ -155,6 +117,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	userAgent := c.GetHeader("User-Agent")
 	ipAddress := c.ClientIP()
 
+	// Используем новый сервис для обновления токенов
 	tokenPair, err := h.authService.RefreshAccessToken(req.RefreshToken, userAgent, ipAddress)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
@@ -186,6 +149,7 @@ func (h *AuthHandler) GetSessions(c *gin.Context) {
 		return
 	}
 
+	// Используем новый сервис для получения сессий
 	sessions, err := h.authService.GetUserSessions(userID.(uuid.UUID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get sessions"})
@@ -208,7 +172,7 @@ func (h *AuthHandler) RevokeSession(c *gin.Context) {
 		return
 	}
 
-	// Verify the session belongs to the user
+	// Проверяем, что сессия принадлежит пользователю
 	sessions, err := h.authService.GetUserSessions(userID.(uuid.UUID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify session"})
@@ -228,6 +192,7 @@ func (h *AuthHandler) RevokeSession(c *gin.Context) {
 		return
 	}
 
+	// Отзываем сессию
 	if err := h.authService.RevokeSession(sessionID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke session"})
 		return
@@ -243,6 +208,7 @@ func (h *AuthHandler) RevokeAllSessions(c *gin.Context) {
 		return
 	}
 
+	// Используем новый сервис для отзыва всех сессий
 	if err := h.authService.RevokeAllUserSessions(userID.(uuid.UUID)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke all sessions"})
 		return

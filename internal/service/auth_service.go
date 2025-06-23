@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/rs/zerolog/log"
 	"googleAuth/internal/config"
 	"googleAuth/internal/domain"
 	"time"
@@ -12,55 +13,96 @@ import (
 	"github.com/google/uuid"
 )
 
-type authService struct {
-	jwtSecret   string
+type authenticationService struct {
+	config      *config.Config
+	oauthSvc    domain.OAuthService
 	userRepo    domain.UserRepository
 	sessionRepo domain.SessionRepository
+	jwtSecret   string
 }
 
-type Claims struct {
-	UserID    uuid.UUID `json:"user_id"`
-	SessionID string    `json:"session_id"`
-	jwt.RegisteredClaims
-}
-
-func NewAuthService(cfg *config.Config, userRepo domain.UserRepository, sessionRepo domain.SessionRepository) domain.AuthService {
-	return &authService{
-		jwtSecret:   cfg.JWTSecret,
+func NewAuthenticationService(
+	cfg *config.Config,
+	oauthSvc domain.OAuthService,
+	userRepo domain.UserRepository,
+	sessionRepo domain.SessionRepository,
+) domain.AuthenticationService {
+	return &authenticationService{
+		config:      cfg,
+		oauthSvc:    oauthSvc,
 		userRepo:    userRepo,
 		sessionRepo: sessionRepo,
+		jwtSecret:   cfg.JWTSecret,
 	}
 }
 
-// internal/service/auth_service.go - Add these methods
-func (s *authService) StoreTemporaryAuth(authCode string, authResult *domain.AuthResult, expiration time.Duration) error {
-	authResultJSON, err := json.Marshal(authResult)
+// OAuth flow methods
+func (s *authenticationService) InitiateGoogleAuth(state string) string {
+	return s.oauthSvc.GetAuthURL(state)
+}
+
+func (s *authenticationService) CompleteGoogleAuth(ctx context.Context, code, state, userAgent, ipAddress string) (*domain.AuthResult, error) {
+	// Exchange code for token
+	token, err := s.oauthSvc.ExchangeCode(ctx, code)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("failed to exchange code: %w", err)
 	}
 
-	return s.sessionRepo.StoreTemporaryAuth(context.Background(), authCode, string(authResultJSON), expiration)
+	// Get user info from Google
+	userInfo, err := s.oauthSvc.GetUserInfo(ctx, token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user info: %w", err)
+	}
+
+	// Find or create user
+	user, err := s.findOrCreateUser(ctx, userInfo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find or create user: %w", err)
+	}
+
+	// Generate token pair
+	tokenPair, err := s.GenerateTokenPair(user.ID, userAgent, ipAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate tokens: %w", err)
+	}
+
+	return &domain.AuthResult{
+		User:   user,
+		Tokens: tokenPair,
+	}, nil
 }
 
-func (s *authService) ExchangeAuthCode(authCode string) (*domain.AuthResult, error) {
-	authData, err := s.sessionRepo.GetTemporaryAuth(context.Background(), authCode)
+func (s *authenticationService) findOrCreateUser(ctx context.Context, userInfo *domain.GoogleUserInfo) (*domain.User, error) {
+	// Try to find existing user
+	existingUser, err := s.userRepo.GetByGoogleID(ctx, userInfo.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	if authData == "" {
-		return nil, fmt.Errorf("invalid or expired auth code")
+	if existingUser != nil {
+		return existingUser, nil
 	}
 
-	var authResult domain.AuthResult
-	if err := json.Unmarshal([]byte(authData), &authResult); err != nil {
+	// Create new user
+	newUser := &domain.User{
+		ID:        uuid.New(),
+		GoogleID:  userInfo.ID,
+		Email:     userInfo.Email,
+		Name:      userInfo.Name,
+		Picture:   userInfo.Picture,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	if err := s.userRepo.Create(ctx, newUser); err != nil {
 		return nil, err
 	}
 
-	return &authResult, nil
+	return newUser, nil
 }
 
-func (s *authService) GenerateTokenPair(userID uuid.UUID, userAgent, ipAddress string) (*domain.TokenPair, error) {
+// Token management methods
+func (s *authenticationService) GenerateTokenPair(userID uuid.UUID, userAgent, ipAddress string) (*domain.TokenPair, error) {
 	sessionID := uuid.New().String()
 
 	accessToken, err := s.generateAccessToken(userID, sessionID)
@@ -95,7 +137,7 @@ func (s *authService) GenerateTokenPair(userID uuid.UUID, userAgent, ipAddress s
 	}, nil
 }
 
-func (s *authService) generateAccessToken(userID uuid.UUID, sessionID string) (string, error) {
+func (s *authenticationService) generateAccessToken(userID uuid.UUID, sessionID string) (string, error) {
 	claims := &Claims{
 		UserID:    userID,
 		SessionID: sessionID,
@@ -109,7 +151,7 @@ func (s *authService) generateAccessToken(userID uuid.UUID, sessionID string) (s
 	return token.SignedString([]byte(s.jwtSecret))
 }
 
-func (s *authService) generateRefreshToken(userID uuid.UUID, sessionID string) (string, error) {
+func (s *authenticationService) generateRefreshToken(userID uuid.UUID, sessionID string) (string, error) {
 	claims := &Claims{
 		UserID:    userID,
 		SessionID: sessionID,
@@ -123,7 +165,15 @@ func (s *authService) generateRefreshToken(userID uuid.UUID, sessionID string) (
 	return token.SignedString([]byte(s.jwtSecret))
 }
 
-func (s *authService) ValidateAccessToken(tokenString string) (uuid.UUID, error) {
+func (s *authenticationService) ValidateAccessToken(tokenString string) (uuid.UUID, error) {
+	authInfo, err := s.ValidateAccessTokenWithDetails(tokenString)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return authInfo.UserID, nil
+}
+
+func (s *authenticationService) ValidateAccessTokenWithDetails(tokenString string) (*domain.AuthInfo, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -132,49 +182,117 @@ func (s *authService) ValidateAccessToken(tokenString string) (uuid.UUID, error)
 	})
 
 	if err != nil {
-		return uuid.Nil, err
+		return nil, fmt.Errorf("token parsing failed: %w", err)
 	}
 
-	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
-		// Verify session still exists
-		session, err := s.sessionRepo.GetByID(context.Background(), claims.SessionID)
-		if err != nil || session == nil {
-			return uuid.Nil, fmt.Errorf("session not found or expired")
-		}
-
-		// Update last used time asynchronously
-		go s.sessionRepo.UpdateLastUsed(context.Background(), claims.SessionID)
-
-		return claims.UserID, nil
+	claims, ok := token.Claims.(*Claims)
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("invalid token claims")
 	}
 
-	return uuid.Nil, fmt.Errorf("invalid token")
+	// Verify session still exists and is valid
+	session, err := s.sessionRepo.GetByID(context.Background(), claims.SessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session verification failed: %w", err)
+	}
+
+	if session == nil {
+		return nil, fmt.Errorf("session not found")
+	}
+
+	if time.Now().After(session.ExpiresAt) {
+		// Clean up expired session asynchronously
+		go s.sessionRepo.Delete(context.Background(), session.ID)
+		return nil, fmt.Errorf("session expired")
+	}
+
+	// Update last used time asynchronously
+	go s.sessionRepo.UpdateLastUsed(context.Background(), claims.SessionID)
+
+	return &domain.AuthInfo{
+		UserID:    claims.UserID,
+		SessionID: claims.SessionID,
+	}, nil
 }
 
-func (s *authService) RefreshAccessToken(refreshToken string, userAgent, ipAddress string) (*domain.TokenPair, error) {
+func (s *authenticationService) RefreshAccessToken(refreshToken, userAgent, ipAddress string) (*domain.TokenPair, error) {
 	session, err := s.sessionRepo.GetByRefreshToken(context.Background(), refreshToken)
-	if err != nil || session == nil {
-		return nil, fmt.Errorf("invalid refresh token")
+	if err != nil {
+		log.Printf("DEBUG: Error getting session by refresh token: %v", err)
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+
+	if session == nil {
+		log.Printf("DEBUG: Session not found for refresh token")
+		return nil, fmt.Errorf("invalid refresh token: session not found")
 	}
 
 	if time.Now().After(session.ExpiresAt) {
 		// Clean up expired session
-		s.sessionRepo.Delete(context.Background(), session.ID)
+		go s.sessionRepo.Delete(context.Background(), session.ID)
+
 		return nil, fmt.Errorf("refresh token expired")
 	}
 
 	// Generate new token pair
-	return s.GenerateTokenPair(session.UserID, userAgent, ipAddress)
+	newTokenPair, err := s.GenerateTokenPair(session.UserID, userAgent, ipAddress)
+	if err != nil {
+		log.Printf("Degubing: Error generating new token pair")
+		return nil, fmt.Errorf("failed to generate new tokens: %w", err)
+	}
+
+	if err := s.sessionRepo.Delete(context.Background(), session.ID); err != nil {
+		log.Printf("Debug: warn - failed to delete old session: %v", err)
+	}
+
+	log.Printf("Generated new tokens with session Id: %s", newTokenPair)
+	return newTokenPair, nil
 }
 
-func (s *authService) RevokeSession(sessionID string) error {
+// Session management methods
+func (s *authenticationService) RevokeSession(sessionID string) error {
 	return s.sessionRepo.Delete(context.Background(), sessionID)
 }
 
-func (s *authService) GetUserSessions(userID uuid.UUID) ([]*domain.Session, error) {
+func (s *authenticationService) GetUserSessions(userID uuid.UUID) ([]*domain.Session, error) {
 	return s.sessionRepo.GetByUserID(context.Background(), userID)
 }
 
-func (s *authService) RevokeAllUserSessions(userID uuid.UUID) error {
+func (s *authenticationService) RevokeAllUserSessions(userID uuid.UUID) error {
 	return s.sessionRepo.DeleteByUserID(context.Background(), userID)
+}
+
+// Temporary auth code methods
+func (s *authenticationService) StoreTemporaryAuth(authCode string, authResult *domain.AuthResult, expiration time.Duration) error {
+	authResultJSON, err := json.Marshal(authResult)
+	if err != nil {
+		return err
+	}
+
+	return s.sessionRepo.StoreTemporaryAuth(context.Background(), authCode, string(authResultJSON), expiration)
+}
+
+func (s *authenticationService) ExchangeAuthCode(authCode string) (*domain.AuthResult, error) {
+	authData, err := s.sessionRepo.GetTemporaryAuth(context.Background(), authCode)
+	if err != nil {
+		return nil, err
+	}
+
+	if authData == "" {
+		return nil, fmt.Errorf("invalid or expired auth code")
+	}
+
+	var authResult domain.AuthResult
+	if err := json.Unmarshal([]byte(authData), &authResult); err != nil {
+		return nil, err
+	}
+
+	return &authResult, nil
+}
+
+// Claims struct (moved from auth_service.go)
+type Claims struct {
+	UserID    uuid.UUID `json:"user_id"`
+	SessionID string    `json:"session_id"`
+	jwt.RegisteredClaims
 }

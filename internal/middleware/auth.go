@@ -1,16 +1,15 @@
 package middleware
 
 import (
-	"fmt"
-	"googleAuth/internal/service"
+	"googleAuth/internal/domain"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 )
 
-func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
+// AuthMiddleware provides JWT token validation middleware
+func AuthMiddleware(jwtSecret string, authService domain.AuthenticationService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -26,28 +25,18 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 			return
 		}
 
-		// Parse JWT token to get claims
-		token, err := jwt.ParseWithClaims(tokenString, &service.Claims{}, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return []byte(jwtSecret), nil
-		})
-
+		// Validate token and get authenticated user information
+		authInfo, err := authService.ValidateAccessTokenWithDetails(tokenString)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
 			c.Abort()
 			return
 		}
 
-		if claims, ok := token.Claims.(*service.Claims); ok && token.Valid {
-			c.Set("user_id", claims.UserID)
-			c.Set("session_id", claims.SessionID)
-			c.Next()
-		} else {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
-			c.Abort()
-			return
-		}
+		// Set user context for subsequent handlers
+		c.Set("user_id", authInfo.UserID)
+		c.Set("session_id", authInfo.SessionID)
+
+		c.Next()
 	}
 }

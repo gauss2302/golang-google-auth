@@ -16,7 +16,7 @@ type oauthService struct {
 	config *oauth2.Config
 }
 
-func NewOAuthService(cfg *config.Config, userRepo domain.UserRepository) domain.OAuthService {
+func NewOAuthService(cfg *config.Config) domain.OAuthService {
 	return &oauthService{
 		config: &oauth2.Config{
 			ClientID:     cfg.GoogleClientID,

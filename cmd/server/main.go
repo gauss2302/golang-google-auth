@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"googleAuth/internal/config"
+	"googleAuth/internal/domain"
 	"googleAuth/internal/handler"
 	"googleAuth/internal/middleware"
 	"googleAuth/internal/repository"
@@ -40,7 +41,7 @@ func main() {
 	}
 	defer redisClient.Close()
 
-	// Initialize security components using the constructor functions
+	// Initialize security components
 	rateLimiter := security.NewRateLimiter(security.RateLimiterConfig{
 		Redis:              redisClient,
 		Limit:              cfg.RateLimitPerMinute,
@@ -57,15 +58,21 @@ func main() {
 		CookieSameSite: http.SameSiteStrictMode,
 	})
 
+	// Initialize repositories
 	userRepo := repository.NewUserRepository(db)
 	sessionRepo := repository.NewSessionRepository(redisClient)
-	oauthService := service.NewOAuthService(cfg, userRepo)
-	authService := service.NewAuthService(cfg, userRepo, sessionRepo)
 
-	authHandler := handler.NewAuthHandler(oauthService, authService, userRepo, cfg)
+	// Initialize services
+	oauthService := service.NewOAuthService(cfg)
+
+	// Создаём новый единый AuthenticationService
+	authService := service.NewAuthenticationService(cfg, oauthService, userRepo, sessionRepo)
+
+	// Initialize handlers with new service
+	authHandler := handler.NewAuthHandler(authService, cfg)
 	userHandler := handler.NewUserHandler(userRepo)
 
-	router := setupRouter(cfg, authHandler, userHandler, rateLimiter, csrfProtection)
+	router := setupRouter(cfg, authHandler, userHandler, rateLimiter, csrfProtection, authService)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
@@ -98,7 +105,14 @@ func main() {
 	log.Println("Server exited")
 }
 
-func setupRouter(cfg *config.Config, authHandler *handler.AuthHandler, userHandler *handler.UserHandler, rateLimiter *security.RateLimiter, csrfProtection *security.CSRFProtection) *gin.Engine {
+func setupRouter(
+	cfg *config.Config,
+	authHandler *handler.AuthHandler,
+	userHandler *handler.UserHandler,
+	rateLimiter *security.RateLimiter,
+	csrfProtection *security.CSRFProtection,
+	authService domain.AuthenticationService,
+) *gin.Engine {
 	if cfg.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -108,12 +122,12 @@ func setupRouter(cfg *config.Config, authHandler *handler.AuthHandler, userHandl
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS())
 
-	// Apply rate limiting to all routes using the created instance
+	// Apply rate limiting to all routes
 	router.Use(rateLimiter.GinMiddleware())
 
 	api := router.Group("/api/v1")
 	{
-		// Health check endpoint (no security needed)
+		// Health check endpoint
 		api.GET("/health", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"status":    "healthy",
@@ -121,7 +135,7 @@ func setupRouter(cfg *config.Config, authHandler *handler.AuthHandler, userHandl
 			})
 		})
 
-		// CSRF token endpoint using the created instance
+		// CSRF token endpoint
 		api.GET("/csrf-token", csrfProtection.GinMiddleware(), func(c *gin.Context) {
 			token := security.GetCSRFToken(c)
 			c.JSON(http.StatusOK, gin.H{"csrf_token": token})
@@ -129,25 +143,25 @@ func setupRouter(cfg *config.Config, authHandler *handler.AuthHandler, userHandl
 
 		auth := api.Group("/auth")
 		{
-			// OAuth endpoints (CSRF protection for callback)
+			// OAuth endpoints
 			auth.GET("/google", authHandler.GoogleAuth)
 			auth.GET("/google/callback", csrfProtection.GinMiddleware(), authHandler.GoogleCallback)
 
-			// Token management (requires CSRF protection)
+			// Token management
 			auth.POST("/refresh", csrfProtection.GinMiddleware(), authHandler.RefreshToken)
-			auth.POST("/logout", csrfProtection.GinMiddleware(), middleware.AuthMiddleware(cfg.JWTSecret), authHandler.Logout)
+			auth.POST("/logout", csrfProtection.GinMiddleware(), middleware.AuthMiddleware(cfg.JWTSecret, authService), authHandler.Logout)
 			auth.POST("/exchange-code", csrfProtection.GinMiddleware(), authHandler.ExchangeAuthCode)
 
-			// Session management (requires auth + CSRF)
-			auth.GET("/sessions", middleware.AuthMiddleware(cfg.JWTSecret), authHandler.GetSessions)
-			auth.DELETE("/sessions/:sessionId", csrfProtection.GinMiddleware(), middleware.AuthMiddleware(cfg.JWTSecret), authHandler.RevokeSession)
-			auth.DELETE("/sessions", csrfProtection.GinMiddleware(), middleware.AuthMiddleware(cfg.JWTSecret), authHandler.RevokeAllSessions)
+			// Session management
+			auth.GET("/sessions", middleware.AuthMiddleware(cfg.JWTSecret, authService), authHandler.GetSessions)
+			auth.DELETE("/sessions/:sessionId", csrfProtection.GinMiddleware(), middleware.AuthMiddleware(cfg.JWTSecret, authService), authHandler.RevokeSession)
+			auth.DELETE("/sessions", csrfProtection.GinMiddleware(), middleware.AuthMiddleware(cfg.JWTSecret, authService), authHandler.RevokeAllSessions)
 		}
 
 		protected := api.Group("/")
-		protected.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+		protected.Use(middleware.AuthMiddleware(cfg.JWTSecret, authService))
 		{
-			// Profile endpoints (GET is safe, PUT requires CSRF)
+			// Profile endpoints
 			protected.GET("/profile", userHandler.GetProfile)
 			protected.PUT("/profile", csrfProtection.GinMiddleware(), userHandler.UpdateProfile)
 		}

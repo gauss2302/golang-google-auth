@@ -1,4 +1,3 @@
-// internal/domain/education.go
 package domain
 
 import (

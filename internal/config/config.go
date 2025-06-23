@@ -31,65 +31,65 @@ type Config struct {
 
 func Load() *Config {
 	if err := godotenv.Load(".env"); err != nil {
-		log.Println("No .env file found")
+		log.Println("No .env file found, using system environment variables")
 	}
 
 	cfg := &Config{
-		Environment:        getEnv("ENVIRONMENT", "development"),
-		Port:               getEnv("PORT", "8080"),
-		DatabaseURL:        getEnv("DATABASE_URL", ""),
-		RedisURL:           getEnv("REDIS_URL", "redis://localhost:6379/0"),
-		JWTSecret:          getEnv("JWT_SECRET", ""),
-		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
-		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
-		GoogleRedirectURL:  getEnv("GOOGLE_REDIRECT_URL", ""),
-		FrontendURL:        getEnv("FRONTEND_URL", "http://localhost:3000"),
+		Environment:        getRequiredEnv("ENVIRONMENT"),
+		Port:               getRequiredEnv("PORT"),
+		DatabaseURL:        getRequiredEnv("DATABASE_URL"),
+		RedisURL:           getRequiredEnv("REDIS_URL"),
+		JWTSecret:          getRequiredEnv("JWT_SECRET"),
+		GoogleClientID:     getRequiredEnv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret: getRequiredEnv("GOOGLE_CLIENT_SECRET"),
+		GoogleRedirectURL:  getRequiredEnv("GOOGLE_REDIRECT_URL"),
+		FrontendURL:        getRequiredEnv("FRONTEND_URL"),
 
-		// Security defaults
-		RateLimitPerMinute: getEnvAsInt("RATE_LIMIT_PER_MINUTE", 100),
-		RateLimitInterval:  time.Duration(getEnvAsInt("RATE_LIMIT_INTERVAL_SECONDS", 60)) * time.Second,
-		CookieSecure:       getEnvAsBool("COOKIE_SECURE", true),
+		RateLimitPerMinute: getRequiredEnvAsInt("RATE_LIMIT_PER_MINUTE"),
+		RateLimitInterval:  time.Duration(getRequiredEnvAsInt("RATE_LIMIT_INTERVAL_SECONDS")) * time.Second,
+		CookieSecure:       getRequiredEnvAsBool("COOKIE_SECURE"),
 	}
 
-	// Generate or load CSRF key
-	if csrfKey := getEnv("CSRF_KEY", ""); csrfKey != "" {
+	// Handle CSRF key
+	csrfKey := getRequiredEnv("CSRF_KEY")
+	if csrfKey == "GENERATE" {
+		cfg.CSRFKey = generateRandomKey(32)
+		log.Println("Generated random CSRF key for development. Set CSRF_KEY in production!")
+	} else {
 		decoded, err := base64.StdEncoding.DecodeString(csrfKey)
 		if err != nil {
 			log.Fatal("Invalid CSRF_KEY format, must be base64 encoded")
 		}
 		cfg.CSRFKey = decoded
-	} else {
-		// Generate a random CSRF key for development
-		cfg.CSRFKey = generateRandomKey(32)
-		log.Println("Generated random CSRF key for development. Set CSRF_KEY in production!")
 	}
 
 	return cfg
 }
 
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+func getRequiredEnv(key string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		log.Fatalf("Required environment variable %s is not set", key)
 	}
-	return defaultValue
+	return value
 }
 
-func getEnvAsInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return intValue
-		}
+func getRequiredEnvAsInt(key string) int {
+	value := getRequiredEnv(key)
+	intValue, err := strconv.Atoi(value)
+	if err != nil {
+		log.Fatalf("Environment variable %s must be a valid integer, got: %s", key, value)
 	}
-	return defaultValue
+	return intValue
 }
 
-func getEnvAsBool(key string, defaultValue bool) bool {
-	if value := os.Getenv(key); value != "" {
-		if boolValue, err := strconv.ParseBool(value); err == nil {
-			return boolValue
-		}
+func getRequiredEnvAsBool(key string) bool {
+	value := getRequiredEnv(key)
+	boolValue, err := strconv.ParseBool(value)
+	if err != nil {
+		log.Fatalf("Environment variable %s must be a valid boolean, got: %s", key, value)
 	}
-	return defaultValue
+	return boolValue
 }
 
 func generateRandomKey(length int) []byte {

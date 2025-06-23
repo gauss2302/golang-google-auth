@@ -43,3 +43,9 @@ type AuthResult struct {
 	User   *User      `json:"user"`
 	Tokens *TokenPair `json:"tokens"`
 }
+
+// AuthInfo contains detailed information about authenticated user
+type AuthInfo struct {
+	UserID    uuid.UUID `json:"user_id"`
+	SessionID string    `json:"session_id"`
+}

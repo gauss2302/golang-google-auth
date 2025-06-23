@@ -1,3 +1,4 @@
+// internal/domain/interface.go
 package domain
 
 import (
@@ -35,14 +36,23 @@ type OAuthService interface {
 	GetUserInfo(ctx context.Context, token *oauth2.Token) (*GoogleUserInfo, error)
 }
 
-type AuthService interface {
+type AuthenticationService interface {
+	// OAuth flow
+	InitiateGoogleAuth(state string) string
+	CompleteGoogleAuth(ctx context.Context, code, state, userAgent, ipAddress string) (*AuthResult, error)
+
+	// Token management
 	GenerateTokenPair(userID uuid.UUID, userAgent, ipAddress string) (*TokenPair, error)
 	ValidateAccessToken(tokenString string) (uuid.UUID, error)
-	RefreshAccessToken(refreshToken string, userAgent, ipAddress string) (*TokenPair, error)
+	ValidateAccessTokenWithDetails(tokenString string) (*AuthInfo, error)
+	RefreshAccessToken(refreshToken, userAgent, ipAddress string) (*TokenPair, error)
+
+	// Session management
 	RevokeSession(sessionID string) error
 	GetUserSessions(userID uuid.UUID) ([]*Session, error)
 	RevokeAllUserSessions(userID uuid.UUID) error
-	// Add these new methods
+
+	// Temporary auth codes for frontend callback
 	StoreTemporaryAuth(authCode string, authResult *AuthResult, expiration time.Duration) error
 	ExchangeAuthCode(authCode string) (*AuthResult, error)
 }
