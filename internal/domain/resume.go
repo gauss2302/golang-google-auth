@@ -13,11 +13,3 @@ type Resume struct {
 
 	Education []*Education `json:"education,omitempty" db:"-"`
 }
-
-//type ResumeRepository interface {
-//	AddEducation(ctx context.Context, resumeID uuid.UUID, education *Education) (uuid.UUID, error)
-//	UpdateEducation(ctx context.Context, id uuid.UUID, education *Education) error
-//	DeleteEducation(ctx context.Context, id uuid.UUID) error
-//	GetEducation(ctx context.Context, id uuid.UUID) (*Education, error)
-//	GetEducationByResume(ctx context.Context, resumeID uuid.UUID) ([]*Education, error)
-//}

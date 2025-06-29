@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"googleAuth/internal/config"
-	"googleAuth/internal/domain"
 	"googleAuth/internal/handler"
 	"googleAuth/internal/middleware"
 	"googleAuth/internal/repository"
@@ -41,7 +40,7 @@ func main() {
 	}
 	defer redisClient.Close()
 
-	// Initialize security components
+	// Инициализируем компоненты безопасности
 	rateLimiter := security.NewRateLimiter(security.RateLimiterConfig{
 		Redis:              redisClient,
 		Limit:              cfg.RateLimitPerMinute,
@@ -54,25 +53,27 @@ func main() {
 		CookieSecure:   cfg.CookieSecure,
 		CookiePath:     "/",
 		CookieDomain:   "",
-		CookieMaxAge:   86400, // 24 hours
+		CookieMaxAge:   86400,
 		CookieSameSite: http.SameSiteStrictMode,
 	})
 
-	// Initialize repositories
+	// Инициализируем репозитории
 	userRepo := repository.NewUserRepository(db)
 	sessionRepo := repository.NewSessionRepository(redisClient)
+	skillRepo := repository.NewSkillRepository(db)
 
-	// Initialize services
+	// Инициализируем сервисы
 	oauthService := service.NewOAuthService(cfg)
-
-	// Создаём новый единый AuthenticationService
 	authService := service.NewAuthenticationService(cfg, oauthService, userRepo, sessionRepo)
+	skillService := service.NewSkillService(skillRepo)
 
-	// Initialize handlers with new service
+	// Инициализируем handlers
 	authHandler := handler.NewAuthHandler(authService, cfg)
 	userHandler := handler.NewUserHandler(userRepo)
+	skillHandler := handler.NewSkillHandler(skillService)
 
-	router := setupRouter(cfg, authHandler, userHandler, rateLimiter, csrfProtection, authService)
+	// ✅ Настраиваем роуты БЕЗ передачи authService в middleware
+	router := setupRouter(cfg, authHandler, userHandler, skillHandler, rateLimiter, csrfProtection)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
@@ -109,9 +110,9 @@ func setupRouter(
 	cfg *config.Config,
 	authHandler *handler.AuthHandler,
 	userHandler *handler.UserHandler,
+	skillHandler *handler.SkillHandler,
 	rateLimiter *security.RateLimiter,
 	csrfProtection *security.CSRFProtection,
-	authService domain.AuthenticationService,
 ) *gin.Engine {
 	if cfg.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -121,17 +122,20 @@ func setupRouter(
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS())
-
-	// Apply rate limiting to all routes
 	router.Use(rateLimiter.GinMiddleware())
 
 	api := router.Group("/api/v1")
 	{
-		// Health check endpoint
+		// Health check
 		api.GET("/health", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"status":    "healthy",
 				"timestamp": time.Now().Unix(),
+				"services": gin.H{
+					"database": "connected",
+					"redis":    "connected",
+					"skills":   "enabled",
+				},
 			})
 		})
 
@@ -141,6 +145,7 @@ func setupRouter(
 			c.JSON(http.StatusOK, gin.H{"csrf_token": token})
 		})
 
+		// ========== AUTHENTICATION ROUTES ==========
 		auth := api.Group("/auth")
 		{
 			// OAuth endpoints
@@ -149,21 +154,52 @@ func setupRouter(
 
 			// Token management
 			auth.POST("/refresh", csrfProtection.GinMiddleware(), authHandler.RefreshToken)
-			auth.POST("/logout", csrfProtection.GinMiddleware(), middleware.AuthMiddleware(cfg.JWTSecret, authService), authHandler.Logout)
+			auth.POST("/logout", csrfProtection.GinMiddleware(),
+				middleware.AuthMiddleware(cfg.JWTSecret), // ✅ Только JWT secret
+				authHandler.Logout)
 			auth.POST("/exchange-code", csrfProtection.GinMiddleware(), authHandler.ExchangeAuthCode)
 
 			// Session management
-			auth.GET("/sessions", middleware.AuthMiddleware(cfg.JWTSecret, authService), authHandler.GetSessions)
-			auth.DELETE("/sessions/:sessionId", csrfProtection.GinMiddleware(), middleware.AuthMiddleware(cfg.JWTSecret, authService), authHandler.RevokeSession)
-			auth.DELETE("/sessions", csrfProtection.GinMiddleware(), middleware.AuthMiddleware(cfg.JWTSecret, authService), authHandler.RevokeAllSessions)
+			auth.GET("/sessions",
+				middleware.AuthMiddleware(cfg.JWTSecret), // ✅ Только JWT secret
+				authHandler.GetSessions)
+			auth.DELETE("/sessions/:sessionId", csrfProtection.GinMiddleware(),
+				middleware.AuthMiddleware(cfg.JWTSecret), // ✅ Только JWT secret
+				authHandler.RevokeSession)
+			auth.DELETE("/sessions", csrfProtection.GinMiddleware(),
+				middleware.AuthMiddleware(cfg.JWTSecret), // ✅ Только JWT secret
+				authHandler.RevokeAllSessions)
 		}
 
+		// ========== PROTECTED ROUTES ==========
 		protected := api.Group("/")
-		protected.Use(middleware.AuthMiddleware(cfg.JWTSecret, authService))
+		protected.Use(middleware.AuthMiddleware(cfg.JWTSecret)) // ✅ Только JWT secret
 		{
 			// Profile endpoints
 			protected.GET("/profile", userHandler.GetProfile)
 			protected.PUT("/profile", csrfProtection.GinMiddleware(), userHandler.UpdateProfile)
+
+			// Skills endpoints
+			skills := protected.Group("/skills")
+			{
+				// READ операции
+				skills.GET("/categories", skillHandler.GetSkillCategories)
+				skills.GET("", skillHandler.GetUserSkills)
+				skills.GET("/:id", skillHandler.GetSkill)
+
+				// WRITE операции
+				skills.POST("", csrfProtection.GinMiddleware(), skillHandler.CreateSkill)
+				skills.POST("/batch", csrfProtection.GinMiddleware(), skillHandler.CreateSkillsBatch)
+				skills.PUT("/:id", csrfProtection.GinMiddleware(), skillHandler.UpdateSkill)
+				skills.DELETE("/:id", csrfProtection.GinMiddleware(), skillHandler.DeleteSkill)
+				skills.DELETE("", csrfProtection.GinMiddleware(), skillHandler.DeleteAllUserSkills)
+			}
+		}
+
+		// Public routes
+		public := api.Group("/public")
+		{
+			public.GET("/skill-categories", skillHandler.GetSkillCategories)
 		}
 	}
 
