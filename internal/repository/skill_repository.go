@@ -20,6 +20,7 @@ func (s *skillRepository) Create(ctx context.Context, skill *domain.Skill) error
 	INSERT INTO skills (id, user_id, name, category, proficiency, created_at, updated_at)
 	VALUES ($1, $2, $3, $4, $5, $6, $7)`
 
+	skill.BeforeSave()
 	_, err := s.db.ExecContext(ctx, query, skill.ID, skill.UserID, skill.Name, skill.Category, skill.Proficiency, skill.CreatedAt, skill.UpdatedAt)
 
 	return err

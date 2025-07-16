@@ -21,6 +21,19 @@ type authenticationService struct {
 	jwtSecret   string
 }
 
+type Claims struct {
+	UserID    uuid.UUID `json:"user_id"`
+	SessionID string    `json:"session_id"`
+	TokenType string    `json:"token_type"`
+	jwt.RegisteredClaims
+}
+
+const (
+	AccessTokenDuration  = 1 * time.Hour       // Increased from 15 minutes
+	RefreshTokenDuration = 30 * 24 * time.Hour // 30 days
+	TempAuthCodeDuration = 5 * time.Minute     // For OAuth flow
+)
+
 func NewAuthenticationService(
 	cfg *config.Config,
 	oauthSvc domain.OAuthService,
@@ -119,7 +132,7 @@ func (s *authenticationService) GenerateTokenPair(userID uuid.UUID, userAgent, i
 		ID:           sessionID,
 		UserID:       userID,
 		RefreshToken: refreshToken,
-		ExpiresAt:    time.Now().Add(24 * 7 * time.Hour), // 7 days
+		ExpiresAt:    time.Now().Add(RefreshTokenDuration),
 		CreatedAt:    time.Now(),
 		LastUsedAt:   time.Now(),
 		UserAgent:    userAgent,
@@ -141,8 +154,9 @@ func (s *authenticationService) generateAccessToken(userID uuid.UUID, sessionID 
 	claims := &Claims{
 		UserID:    userID,
 		SessionID: sessionID,
+		TokenType: "access",
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(AccessTokenDuration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
@@ -155,8 +169,9 @@ func (s *authenticationService) generateRefreshToken(userID uuid.UUID, sessionID
 	claims := &Claims{
 		UserID:    userID,
 		SessionID: sessionID,
+		TokenType: "refresh",
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * 7 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(RefreshTokenDuration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
@@ -175,8 +190,10 @@ func (s *authenticationService) ValidateAccessToken(tokenString string) (uuid.UU
 
 func (s *authenticationService) ValidateAccessTokenWithDetails(tokenString string) (*domain.AuthInfo, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		} else if method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected HMAC algorithm: %v", method.Alg())
 		}
 		return []byte(s.jwtSecret), nil
 	})
@@ -188,6 +205,14 @@ func (s *authenticationService) ValidateAccessTokenWithDetails(tokenString strin
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token claims")
+	}
+
+	if claims.TokenType != "access" {
+		return nil, fmt.Errorf("invalid token type: expected access, got %s", claims.TokenType)
+	}
+
+	if claims.UserID == uuid.Nil {
+		return nil, fmt.Errorf("invalid user ID in token")
 	}
 
 	// Verify session still exists and is valid
@@ -216,6 +241,30 @@ func (s *authenticationService) ValidateAccessTokenWithDetails(tokenString strin
 }
 
 func (s *authenticationService) RefreshAccessToken(refreshToken, userAgent, ipAddress string) (*domain.TokenPair, error) {
+	if refreshToken == "" {
+		return nil, fmt.Errorf("refresh token is required")
+	}
+
+	token, err := jwt.ParseWithClaims(refreshToken, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(s.jwtSecret), nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("invalid refresh token: %w", err)
+	}
+
+	claims, ok := token.Claims.(*Claims)
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("invalid refresh token claims")
+	}
+
+	if claims.TokenType != "refresh" {
+		return nil, fmt.Errorf("invalid token type: expected refresh, got %s", claims.TokenType)
+	}
+
 	session, err := s.sessionRepo.GetByRefreshToken(context.Background(), refreshToken)
 	if err != nil {
 		log.Printf("DEBUG: Error getting session by refresh token: %v", err)
@@ -264,6 +313,14 @@ func (s *authenticationService) RevokeAllUserSessions(userID uuid.UUID) error {
 
 // Temporary auth code methods
 func (s *authenticationService) StoreTemporaryAuth(authCode string, authResult *domain.AuthResult, expiration time.Duration) error {
+	if authCode == "" {
+		return fmt.Errorf("auth code is required")
+	}
+
+	if authResult == nil {
+		return fmt.Errorf("auth result is required")
+	}
+
 	authResultJSON, err := json.Marshal(authResult)
 	if err != nil {
 		return err
@@ -273,6 +330,10 @@ func (s *authenticationService) StoreTemporaryAuth(authCode string, authResult *
 }
 
 func (s *authenticationService) ExchangeAuthCode(authCode string) (*domain.AuthResult, error) {
+	if authCode == "" {
+		return nil, fmt.Errorf("auth code is required")
+	}
+
 	authData, err := s.sessionRepo.GetTemporaryAuth(context.Background(), authCode)
 	if err != nil {
 		return nil, err
@@ -288,11 +349,4 @@ func (s *authenticationService) ExchangeAuthCode(authCode string) (*domain.AuthR
 	}
 
 	return &authResult, nil
-}
-
-// Claims struct (moved from auth_service.go)
-type Claims struct {
-	UserID    uuid.UUID `json:"user_id"`
-	SessionID string    `json:"session_id"`
-	jwt.RegisteredClaims
 }

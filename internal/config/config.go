@@ -40,9 +40,9 @@ func Load() *Config {
 		DatabaseURL:        getRequiredEnv("DATABASE_URL"),
 		RedisURL:           getRequiredEnv("REDIS_URL"),
 		JWTSecret:          getRequiredEnv("JWT_SECRET"),
-		GoogleClientID:     getRequiredEnv("GOOGLE_CLIENT_ID"),
-		GoogleClientSecret: getRequiredEnv("GOOGLE_CLIENT_SECRET"),
-		GoogleRedirectURL:  getRequiredEnv("GOOGLE_REDIRECT_URL"),
+		GoogleClientID:     getRequiredEnv("GOOGLE_WEB_CLIENT_ID"),
+		GoogleClientSecret: getRequiredEnv("GOOGLE_WEB_CLIENT_SECRET"),
+		GoogleRedirectURL:  getRequiredEnv("GOOGLE_WEB_REDIRECT_URL"),
 		FrontendURL:        getRequiredEnv("FRONTEND_URL"),
 
 		RateLimitPerMinute: getRequiredEnvAsInt("RATE_LIMIT_PER_MINUTE"),

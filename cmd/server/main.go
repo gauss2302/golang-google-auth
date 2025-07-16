@@ -72,7 +72,6 @@ func main() {
 	userHandler := handler.NewUserHandler(userRepo)
 	skillHandler := handler.NewSkillHandler(skillService)
 
-	// ✅ Настраиваем роуты БЕЗ передачи authService в middleware
 	router := setupRouter(cfg, authHandler, userHandler, skillHandler, rateLimiter, csrfProtection)
 
 	srv := &http.Server{
@@ -155,25 +154,25 @@ func setupRouter(
 			// Token management
 			auth.POST("/refresh", csrfProtection.GinMiddleware(), authHandler.RefreshToken)
 			auth.POST("/logout", csrfProtection.GinMiddleware(),
-				middleware.AuthMiddleware(cfg.JWTSecret), // ✅ Только JWT secret
+				middleware.AuthMiddleware(cfg.JWTSecret),
 				authHandler.Logout)
 			auth.POST("/exchange-code", csrfProtection.GinMiddleware(), authHandler.ExchangeAuthCode)
 
 			// Session management
 			auth.GET("/sessions",
-				middleware.AuthMiddleware(cfg.JWTSecret), // ✅ Только JWT secret
+				middleware.AuthMiddleware(cfg.JWTSecret),
 				authHandler.GetSessions)
 			auth.DELETE("/sessions/:sessionId", csrfProtection.GinMiddleware(),
-				middleware.AuthMiddleware(cfg.JWTSecret), // ✅ Только JWT secret
+				middleware.AuthMiddleware(cfg.JWTSecret),
 				authHandler.RevokeSession)
 			auth.DELETE("/sessions", csrfProtection.GinMiddleware(),
-				middleware.AuthMiddleware(cfg.JWTSecret), // ✅ Только JWT secret
+				middleware.AuthMiddleware(cfg.JWTSecret),
 				authHandler.RevokeAllSessions)
 		}
 
 		// ========== PROTECTED ROUTES ==========
 		protected := api.Group("/")
-		protected.Use(middleware.AuthMiddleware(cfg.JWTSecret)) // ✅ Только JWT secret
+		protected.Use(middleware.AuthMiddleware(cfg.JWTSecret))
 		{
 			// Profile endpoints
 			protected.GET("/profile", userHandler.GetProfile)

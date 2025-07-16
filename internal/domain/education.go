@@ -307,7 +307,7 @@ func (ec *EducationCollection) AddEducation(education *Education) error {
 }
 
 // ToJSON converts the collection to JSON
-func (ec EducationCollection) ToJSON() ([]byte, error) {
+func (ec *EducationCollection) ToJSON() ([]byte, error) {
 	return MarshalJSON(ec)
 }
 
