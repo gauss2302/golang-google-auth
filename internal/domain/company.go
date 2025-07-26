@@ -2,6 +2,7 @@ package domain
 
 import (
 	"github.com/google/uuid"
+	"strings"
 	"time"
 )
 
@@ -74,6 +75,8 @@ type Company struct {
 	Description string  `json:"description" db:"description" validate:"required,min=10,max=2000"`
 	Tagline     *string `json:"tagline,omitempty" db:"tagline" validate:"omitempty,max=255"`
 
+	HeadHunters []*CompanyHeadHunter `json:"head_hunters" db:"head_hunters"`
+
 	// Classification
 	Industry    string      `json:"industry" db:"industry" validate:"required"`
 	Size        CompanySize `json:"size" db:"size" validate:"required"`
@@ -128,6 +131,25 @@ type Company struct {
 	DeletedAt *time.Time `json:"deleted_at,omitempty" db:"deleted_at"`
 	CreatedBy uuid.UUID  `json:"created_by" db:"created_by"`
 	UpdatedBy *uuid.UUID `json:"updated_by,omitempty" db:"updated_by"`
+}
+
+type CompanyHeadHunter struct {
+	FirstName string    `json:"first_name" db:"first_name"`
+	LastName  string    `json:"last_name" db:"last_name"`
+	CompanyId uuid.UUID `json:"company_id" db:"company_id"`
+}
+
+func (hh *CompanyHeadHunter) GetFullName() string {
+	parts := []string{}
+
+	if name := strings.TrimSpace(hh.FirstName); name != "" {
+		parts = append(parts, name)
+	}
+	if name := strings.TrimSpace(hh.LastName); name != "" {
+		parts = append(parts, name)
+	}
+
+	return strings.Join(parts, " ")
 }
 
 func (c *Company) CompanyValidate() {

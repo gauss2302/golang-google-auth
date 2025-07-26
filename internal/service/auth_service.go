@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"googleAuth/internal/config"
 	"googleAuth/internal/domain"
 	"time"
@@ -180,13 +179,13 @@ func (s *authenticationService) generateRefreshToken(userID uuid.UUID, sessionID
 	return token.SignedString([]byte(s.jwtSecret))
 }
 
-func (s *authenticationService) ValidateAccessToken(tokenString string) (uuid.UUID, error) {
-	authInfo, err := s.ValidateAccessTokenWithDetails(tokenString)
-	if err != nil {
-		return uuid.Nil, err
-	}
-	return authInfo.UserID, nil
-}
+//func (s *authenticationService) ValidateAccessToken(tokenString string) (uuid.UUID, error) {
+//	authInfo, err := s.ValidateAccessTokenWithDetails(tokenString)
+//	if err != nil {
+//		return uuid.Nil, err
+//	}
+//	return authInfo.UserID, nil
+//}
 
 func (s *authenticationService) ValidateAccessTokenWithDetails(tokenString string) (*domain.AuthInfo, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
@@ -241,61 +240,31 @@ func (s *authenticationService) ValidateAccessTokenWithDetails(tokenString strin
 }
 
 func (s *authenticationService) RefreshAccessToken(refreshToken, userAgent, ipAddress string) (*domain.TokenPair, error) {
-	if refreshToken == "" {
-		return nil, fmt.Errorf("refresh token is required")
-	}
-
-	token, err := jwt.ParseWithClaims(refreshToken, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(s.jwtSecret), nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("invalid refresh token: %w", err)
-	}
-
-	claims, ok := token.Claims.(*Claims)
-	if !ok || !token.Valid {
-		return nil, fmt.Errorf("invalid refresh token claims")
-	}
-
-	if claims.TokenType != "refresh" {
-		return nil, fmt.Errorf("invalid token type: expected refresh, got %s", claims.TokenType)
-	}
-
 	session, err := s.sessionRepo.GetByRefreshToken(context.Background(), refreshToken)
-	if err != nil {
-		log.Printf("DEBUG: Error getting session by refresh token: %v", err)
-		return nil, fmt.Errorf("database error: %w", err)
-	}
-
-	if session == nil {
-		log.Printf("DEBUG: Session not found for refresh token")
-		return nil, fmt.Errorf("invalid refresh token: session not found")
+	if err != nil || session == nil {
+		return nil, fmt.Errorf("invalid refresh token")
 	}
 
 	if time.Now().After(session.ExpiresAt) {
-		// Clean up expired session
-		go s.sessionRepo.Delete(context.Background(), session.ID)
-
+		s.sessionRepo.Delete(context.Background(), session.ID)
 		return nil, fmt.Errorf("refresh token expired")
 	}
 
-	// Generate new token pair
-	newTokenPair, err := s.GenerateTokenPair(session.UserID, userAgent, ipAddress)
+	newAccessToken, err := s.generateAccessToken(session.UserID, session.ID)
 	if err != nil {
-		log.Printf("Degubing: Error generating new token pair")
-		return nil, fmt.Errorf("failed to generate new tokens: %w", err)
+		return nil, err
 	}
 
-	if err := s.sessionRepo.Delete(context.Background(), session.ID); err != nil {
-		log.Printf("Debug: warn - failed to delete old session: %v", err)
+	session.LastUsedAt = time.Now()
+	if err := s.sessionRepo.Update(context.Background(), session); err != nil {
+		return nil, err
 	}
 
-	log.Printf("Generated new tokens with session Id: %s", newTokenPair)
-	return newTokenPair, nil
+	return &domain.TokenPair{
+		AccessToken:  newAccessToken,
+		RefreshToken: refreshToken,
+		SessionID:    session.ID,
+	}, nil
 }
 
 // Session management methods

@@ -138,6 +138,7 @@ type JobPosition struct {
 	// Company relationship
 	CompanyID uuid.UUID `json:"company_id" db:"company_id" validate:"required"`
 	Company   *Company  `json:"company,omitempty"` // For eager loading
+	HunterID  uuid.UUID `json:"hunter_id" db:"hunter_id" validate:"required"`
 
 	// Basic information
 	Title       string `json:"title" db:"title" validate:"required,min=2,max=255"`

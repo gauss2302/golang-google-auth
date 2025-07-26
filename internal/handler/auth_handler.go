@@ -27,7 +27,7 @@ func (h *AuthHandler) GoogleAuth(c *gin.Context) {
 	state := uuid.New().String()
 
 	// Устанавливаем cookie с state для CSRF защиты
-	c.SetCookie("oauth_state", state, 600, "/", "", false, true)
+	c.SetCookie("oauth_state", state, 600, "/", "", h.config.CookieSecure, true)
 
 	// Используем новый сервис
 	url := h.authService.InitiateGoogleAuth(state)

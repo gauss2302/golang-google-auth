@@ -43,7 +43,7 @@ type AuthenticationService interface {
 
 	// Token management
 	GenerateTokenPair(userID uuid.UUID, userAgent, ipAddress string) (*TokenPair, error)
-	ValidateAccessToken(tokenString string) (uuid.UUID, error)
+	//ValidateAccessToken(tokenString string) (uuid.UUID, error)
 	ValidateAccessTokenWithDetails(tokenString string) (*AuthInfo, error)
 	RefreshAccessToken(refreshToken, userAgent, ipAddress string) (*TokenPair, error)
 
