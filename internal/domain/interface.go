@@ -1,4 +1,3 @@
-// internal/domain/interface.go
 package domain
 
 import (
@@ -28,6 +27,8 @@ type SessionRepository interface {
 
 	StoreTemporaryAuth(ctx context.Context, authCode, authData string, expiration time.Duration) error
 	GetTemporaryAuth(ctx context.Context, authCode string) (string, error)
+	BlacklistToken(ctx context.Context, jti string, expiresAt time.Time) error
+	IsTokenBlacklisted(ctx context.Context, jti string) (bool, error)
 }
 
 type OAuthService interface {

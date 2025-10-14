@@ -47,13 +47,12 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	}
 
 	// Очищаем state cookie
-	c.SetCookie("oauth_state", "", -1, "/", "", false, true)
+	c.SetCookie("oauth_state", "", -1, "/", "", h.config.CookieSecure, true)
 
 	// Получаем информацию о пользователе и клиенте
 	userAgent := c.GetHeader("User-Agent")
 	ipAddress := c.ClientIP()
 
-	// Вся сложная логика теперь инкапсулирована в сервисе
 	authResult, err := h.authService.CompleteGoogleAuth(
 		c.Request.Context(),
 		code,
@@ -62,13 +61,10 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 		ipAddress,
 	)
 	if err != nil {
-		// Логируем ошибку и перенаправляем пользователя
 		frontendURL := fmt.Sprintf("%s/auth/login?error=auth_failed", h.config.FrontendURL)
 		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 		return
 	}
-
-	// Генерируем безопасный auth code для обмена на фронтенде
 	authCode := uuid.New().String()
 	if err := h.authService.StoreTemporaryAuth(authCode, authResult, 5*time.Minute); err != nil {
 		frontendURL := fmt.Sprintf("%s/auth/login?error=storage_failed", h.config.FrontendURL)

@@ -3,8 +3,10 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"github.com/google/uuid"
+	"fmt"
 	"googleAuth/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 type userRepository struct {
@@ -25,6 +27,42 @@ func (r *userRepository) Create(ctx context.Context, user *domain.User) error {
 		user.CreatedAt, user.UpdatedAt)
 
 	return err
+}
+
+func (r *userRepository) CreateByEmailAndPassword(ctx context.Context, user *domain.User) (*domain.User, error) {
+
+	if user == nil {
+		return nil, fmt.Errorf("user cannot be nil")
+	}
+
+	userModel := &domain.User{}
+	query := `
+			INSERT INTO users (id, email, hashed_password, first_name, last_name, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+			`
+
+	err := r.db.QueryRowContext(ctx, query,
+        user.ID,
+        user.Email,
+        user.HashedPassword,
+        user.FirstName,
+        user.LastName,
+        user.CreatedAt,
+        user.UpdatedAt,
+    ).Scan(
+        &userModel.ID,
+        &userModel.Email,
+        &userModel.FirstName,
+        &userModel.LastName,
+        &userModel.CreatedAt,
+        &userModel.UpdatedAt,
+    )
+
+	 if err != nil {
+        return nil, err
+    }
+
+    return userModel, nil
 }
 
 func (r *userRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {

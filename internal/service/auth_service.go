@@ -24,13 +24,14 @@ type Claims struct {
 	UserID    uuid.UUID `json:"user_id"`
 	SessionID string    `json:"session_id"`
 	TokenType string    `json:"token_type"`
+	JTI       string    `json:"jti"`
 	jwt.RegisteredClaims
 }
 
 const (
-	AccessTokenDuration  = 1 * time.Hour       // Increased from 15 minutes
-	RefreshTokenDuration = 30 * 24 * time.Hour // 30 days
-	TempAuthCodeDuration = 5 * time.Minute     // For OAuth flow
+	AccessTokenDuration  = 1 * time.Hour
+	RefreshTokenDuration = 30 * 24 * time.Hour
+	TempAuthCodeDuration = 5 * time.Minute
 )
 
 func NewAuthenticationService(

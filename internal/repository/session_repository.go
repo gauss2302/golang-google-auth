@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/redis/go-redis/v9"
 	"googleAuth/internal/domain"
@@ -13,6 +14,16 @@ import (
 
 type sessionRepository struct {
 	client *redis.Client
+}
+
+func (r *sessionRepository) BlacklistToken(ctx context.Context, jti string, expiresAt time.Time) error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (r *sessionRepository) IsTokenBlacklisted(ctx context.Context, jti string) (bool, error) {
+	//TODO implement me
+	panic("implement me")
 }
 
 func NewSessionRepository(client *redis.Client) domain.SessionRepository {
@@ -49,12 +60,12 @@ func (r *sessionRepository) GetByID(ctx context.Context, sessionID string) (*dom
 	sessionKey := fmt.Sprintf("session:%s", sessionID)
 
 	data, err := r.client.Get(ctx, sessionKey).Result()
-	if err == redis.Nil {
-		return nil, nil
-	}
-	if err != nil {
+	if errors.Is(err, redis.Nil) {
 		return nil, err
 	}
+	//if err != nil {
+	//	return nil, err
+	//}
 
 	var session domain.Session
 	if err := json.Unmarshal([]byte(data), &session); err != nil {
