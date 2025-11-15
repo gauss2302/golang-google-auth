@@ -13,11 +13,12 @@ import (
 )
 
 type authenticationService struct {
-	config      *config.Config
-	oauthSvc    domain.OAuthService
-	userRepo    domain.UserRepository
-	sessionRepo domain.SessionRepository
-	jwtSecret   string
+	config          *config.Config
+	oauthSvc        domain.OAuthService
+	twitterOAuthSvc domain.TwitterOAuthService
+	userRepo        domain.UserRepository
+	sessionRepo     domain.SessionRepository
+	jwtSecret       string
 }
 
 type Claims struct {
@@ -37,15 +38,17 @@ const (
 func NewAuthenticationService(
 	cfg *config.Config,
 	oauthSvc domain.OAuthService,
+	twitterOAuthSvc domain.TwitterOAuthService,
 	userRepo domain.UserRepository,
 	sessionRepo domain.SessionRepository,
 ) domain.AuthenticationService {
 	return &authenticationService{
-		config:      cfg,
-		oauthSvc:    oauthSvc,
-		userRepo:    userRepo,
-		sessionRepo: sessionRepo,
-		jwtSecret:   cfg.JWTSecret,
+		config:          cfg,
+		oauthSvc:        oauthSvc,
+		twitterOAuthSvc: twitterOAuthSvc,
+		userRepo:        userRepo,
+		sessionRepo:     sessionRepo,
+		jwtSecret:       cfg.JWTSecret,
 	}
 }
 
@@ -68,7 +71,7 @@ func (s *authenticationService) CompleteGoogleAuth(ctx context.Context, code, st
 	}
 
 	// Find or create user
-	user, err := s.findOrCreateUser(ctx, userInfo)
+	user, err := s.findOrCreateGoogleUser(ctx, userInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find or create user: %w", err)
 	}
@@ -85,7 +88,38 @@ func (s *authenticationService) CompleteGoogleAuth(ctx context.Context, code, st
 	}, nil
 }
 
-func (s *authenticationService) findOrCreateUser(ctx context.Context, userInfo *domain.GoogleUserInfo) (*domain.User, error) {
+func (s *authenticationService) InitiateTwitterAuth(state string) string {
+	return s.twitterOAuthSvc.GetAuthURL(state)
+}
+
+func (s *authenticationService) CompleteTwitterAuth(ctx context.Context, code, state, userAgent, ipAddress string) (*domain.AuthResult, error) {
+	token, err := s.twitterOAuthSvc.ExchangeCode(ctx, code)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange twitter code: %w", err)
+	}
+
+	userInfo, err := s.twitterOAuthSvc.GetUserInfo(ctx, token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get twitter user info: %w", err)
+	}
+
+	user, err := s.findOrCreateTwitterUser(ctx, userInfo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find or create twitter user: %w", err)
+	}
+
+	tokenPair, err := s.GenerateTokenPair(user.ID, userAgent, ipAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate tokens: %w", err)
+	}
+
+	return &domain.AuthResult{
+		User:   user,
+		Tokens: tokenPair,
+	}, nil
+}
+
+func (s *authenticationService) findOrCreateGoogleUser(ctx context.Context, userInfo *domain.GoogleUserInfo) (*domain.User, error) {
 	// Try to find existing user
 	existingUser, err := s.userRepo.GetByGoogleID(ctx, userInfo.ID)
 	if err != nil {
@@ -105,6 +139,48 @@ func (s *authenticationService) findOrCreateUser(ctx context.Context, userInfo *
 		Picture:   userInfo.Picture,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
+	}
+
+	if err := s.userRepo.Create(ctx, newUser); err != nil {
+		return nil, err
+	}
+
+	return newUser, nil
+}
+
+func (s *authenticationService) findOrCreateTwitterUser(ctx context.Context, userInfo *domain.TwitterUserInfo) (*domain.User, error) {
+	existingUser, err := s.userRepo.GetByTwitterID(ctx, userInfo.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	if existingUser != nil {
+		return existingUser, nil
+	}
+
+	email := userInfo.Email
+	if email == "" {
+		if userInfo.Username != "" {
+			email = fmt.Sprintf("%s@twitter.local", userInfo.Username)
+		} else {
+			email = fmt.Sprintf("%s@twitter.local", userInfo.ID)
+		}
+	}
+
+	name := userInfo.Name
+	if name == "" {
+		name = userInfo.Username
+	}
+
+	newUser := &domain.User{
+		ID:            uuid.New(),
+		TwitterID:     userInfo.ID,
+		TwitterHandle: userInfo.Username,
+		Email:         email,
+		Name:          name,
+		Picture:       userInfo.ProfileImageURL,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 
 	if err := s.userRepo.Create(ctx, newUser); err != nil {

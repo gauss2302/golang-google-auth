@@ -11,6 +11,7 @@ type UserRepository interface {
 	Create(ctx context.Context, user *User) error
 	GetByID(ctx context.Context, id uuid.UUID) (*User, error)
 	GetByGoogleID(ctx context.Context, googleID string) (*User, error)
+	GetByTwitterID(ctx context.Context, twitterID string) (*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	Update(ctx context.Context, user *User) error
 }
@@ -37,10 +38,18 @@ type OAuthService interface {
 	GetUserInfo(ctx context.Context, token *oauth2.Token) (*GoogleUserInfo, error)
 }
 
+type TwitterOAuthService interface {
+	GetAuthURL(state string) string
+	ExchangeCode(ctx context.Context, code string) (*oauth2.Token, error)
+	GetUserInfo(ctx context.Context, token *oauth2.Token) (*TwitterUserInfo, error)
+}
+
 type AuthenticationService interface {
 	// OAuth flow
 	InitiateGoogleAuth(state string) string
 	CompleteGoogleAuth(ctx context.Context, code, state, userAgent, ipAddress string) (*AuthResult, error)
+	InitiateTwitterAuth(state string) string
+	CompleteTwitterAuth(ctx context.Context, code, state, userAgent, ipAddress string) (*AuthResult, error)
 
 	// Token management
 	GenerateTokenPair(userID uuid.UUID, userAgent, ipAddress string) (*TokenPair, error)

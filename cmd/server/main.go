@@ -64,7 +64,8 @@ func main() {
 
 	// Инициализируем сервисы
 	oauthService := service.NewOAuthService(cfg)
-	authService := service.NewAuthenticationService(cfg, oauthService, userRepo, sessionRepo)
+	twitterOAuthService := service.NewTwitterOAuthService(cfg)
+	authService := service.NewAuthenticationService(cfg, oauthService, twitterOAuthService, userRepo, sessionRepo)
 	skillService := service.NewSkillService(skillRepo)
 
 	// Инициализируем handlers
@@ -150,6 +151,8 @@ func setupRouter(
 			// OAuth endpoints
 			auth.GET("/google", authHandler.GoogleAuth)
 			auth.GET("/google/callback", csrfProtection.GinMiddleware(), authHandler.GoogleCallback)
+			auth.GET("/twitter", authHandler.TwitterAuth)
+			auth.GET("/twitter/callback", csrfProtection.GinMiddleware(), authHandler.TwitterCallback)
 
 			// Token management
 			auth.POST("/refresh", csrfProtection.GinMiddleware(), authHandler.RefreshToken)

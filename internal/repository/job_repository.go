@@ -5,10 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/rs/zerolog/log"
 	"googleAuth/internal/domain"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
 
 type postgresJobRepository struct {
@@ -153,6 +154,18 @@ func (j *postgresJobRepository) DeletePosition(ctx context.Context, jobId uuid.U
 	}
 
 	return j.checkRowsAffected(result, "delete job position")
+}
+
+func (j *postgresJobRepository) DeleteThisPosition(ctx context.Context, jobId uuid.UUID) error {
+	query := `DELETE FROM position WHERE id = $1`
+
+	_, err := j.db.ExecContext(ctx, query, jobId)
+	if err != nil {
+			log.Error().Err(err).Msg("failed to delete job position")
+		return err
+	}
+
+	return nil
 }
 
 func (j *postgresJobRepository) checkRowsAffected(result sql.Result, operation string) error {

@@ -77,6 +77,55 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 }
 
+func (h *AuthHandler) TwitterAuth(c *gin.Context) {
+	state := uuid.New().String()
+
+	c.SetCookie("oauth_state", state, 600, "/", "", h.config.CookieSecure, true)
+
+	url := h.authService.InitiateTwitterAuth(state)
+	c.JSON(http.StatusOK, gin.H{"auth_url": url})
+}
+
+func (h *AuthHandler) TwitterCallback(c *gin.Context) {
+	state := c.Query("state")
+	code := c.Query("code")
+
+	storedState, err := c.Cookie("oauth_state")
+	if err != nil || state != storedState {
+		frontendURL := fmt.Sprintf("%s/auth/login?error=invalid_state", h.config.FrontendURL)
+		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
+		return
+	}
+
+	c.SetCookie("oauth_state", "", -1, "/", "", h.config.CookieSecure, true)
+
+	userAgent := c.GetHeader("User-Agent")
+	ipAddress := c.ClientIP()
+
+	authResult, err := h.authService.CompleteTwitterAuth(
+		c.Request.Context(),
+		code,
+		state,
+		userAgent,
+		ipAddress,
+	)
+	if err != nil {
+		frontendURL := fmt.Sprintf("%s/auth/login?error=auth_failed", h.config.FrontendURL)
+		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
+		return
+	}
+
+	authCode := uuid.New().String()
+	if err := h.authService.StoreTemporaryAuth(authCode, authResult, 5*time.Minute); err != nil {
+		frontendURL := fmt.Sprintf("%s/auth/login?error=storage_failed", h.config.FrontendURL)
+		c.Redirect(http.StatusTemporaryRedirect, frontendURL)
+		return
+	}
+
+	frontendURL := fmt.Sprintf("%s/auth/callback?auth_code=%s", h.config.FrontendURL, authCode)
+	c.Redirect(http.StatusTemporaryRedirect, frontendURL)
+}
+
 func (h *AuthHandler) ExchangeAuthCode(c *gin.Context) {
 	var req struct {
 		AuthCode string `json:"auth_code" binding:"required"`

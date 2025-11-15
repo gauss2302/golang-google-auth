@@ -12,15 +12,18 @@ import (
 )
 
 type Config struct {
-	Environment        string
-	Port               string
-	DatabaseURL        string
-	RedisURL           string
-	JWTSecret          string
-	GoogleClientID     string
-	GoogleClientSecret string
-	GoogleRedirectURL  string
-	FrontendURL        string
+	Environment         string
+	Port                string
+	DatabaseURL         string
+	RedisURL            string
+	JWTSecret           string
+	GoogleClientID      string
+	GoogleClientSecret  string
+	GoogleRedirectURL   string
+	TwitterClientID     string
+	TwitterClientSecret string
+	TwitterRedirectURL  string
+	FrontendURL         string
 
 	// Security Settings
 	CSRFKey            []byte
@@ -35,15 +38,18 @@ func Load() *Config {
 	}
 
 	cfg := &Config{
-		Environment:        getRequiredEnv("ENVIRONMENT"),
-		Port:               getRequiredEnv("PORT"),
-		DatabaseURL:        getRequiredEnv("DATABASE_URL"),
-		RedisURL:           getRequiredEnv("REDIS_URL"),
-		JWTSecret:          getRequiredEnv("JWT_SECRET"),
-		GoogleClientID:     getRequiredEnv("GOOGLE_WEB_CLIENT_ID"),
-		GoogleClientSecret: getRequiredEnv("GOOGLE_WEB_CLIENT_SECRET"),
-		GoogleRedirectURL:  getRequiredEnv("GOOGLE_WEB_REDIRECT_URL"),
-		FrontendURL:        getRequiredEnv("FRONTEND_URL"),
+		Environment:         getRequiredEnv("ENVIRONMENT"),
+		Port:                getRequiredEnv("PORT"),
+		DatabaseURL:         getRequiredEnv("DATABASE_URL"),
+		RedisURL:            getRequiredEnv("REDIS_URL"),
+		JWTSecret:           getRequiredEnv("JWT_SECRET"),
+		GoogleClientID:      getRequiredEnv("GOOGLE_WEB_CLIENT_ID"),
+		GoogleClientSecret:  getRequiredEnv("GOOGLE_WEB_CLIENT_SECRET"),
+		GoogleRedirectURL:   getRequiredEnv("GOOGLE_WEB_REDIRECT_URL"),
+		TwitterClientID:     getRequiredEnv("TWITTER_CLIENT_ID"),
+		TwitterClientSecret: getRequiredEnv("TWITTER_CLIENT_SECRET"),
+		TwitterRedirectURL:  getRequiredEnv("TWITTER_REDIRECT_URL"),
+		FrontendURL:         getRequiredEnv("FRONTEND_URL"),
 
 		RateLimitPerMinute: getRequiredEnvAsInt("RATE_LIMIT_PER_MINUTE"),
 		RateLimitInterval:  time.Duration(getRequiredEnvAsInt("RATE_LIMIT_INTERVAL_SECONDS")) * time.Second,
