@@ -2,9 +2,10 @@ package domain
 
 import (
 	"context"
+	"time"
+
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
-	"time"
 )
 
 type UserRepository interface {
@@ -54,8 +55,8 @@ type AuthenticationService interface {
 	// Token management
 	GenerateTokenPair(userID uuid.UUID, userAgent, ipAddress string) (*TokenPair, error)
 	//ValidateAccessToken(tokenString string) (uuid.UUID, error)
-	ValidateAccessTokenWithDetails(tokenString string) (*AuthInfo, error)
-	RefreshAccessToken(refreshToken, userAgent, ipAddress string) (*TokenPair, error)
+	ValidateAccessTokenWithDetails(ctx context.Context, tokenString string) (*AuthInfo, error)
+	RefreshAccessToken(ctx context.Context, refreshToken, userAgent, ipAddress string) (*TokenPair, error)
 
 	// Session management
 	RevokeSession(sessionID string) error

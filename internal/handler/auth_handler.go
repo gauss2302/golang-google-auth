@@ -163,7 +163,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	ipAddress := c.ClientIP()
 
 	// Используем новый сервис для обновления токенов
-	tokenPair, err := h.authService.RefreshAccessToken(req.RefreshToken, userAgent, ipAddress)
+	tokenPair, err := h.authService.RefreshAccessToken(c.Request.Context(), req.RefreshToken, userAgent, ipAddress)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
 		return

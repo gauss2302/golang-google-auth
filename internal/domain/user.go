@@ -43,14 +43,16 @@ type TokenPair struct {
 }
 
 type Session struct {
-	ID           string    `json:"id"`
-	UserID       uuid.UUID `json:"user_id"`
-	RefreshToken string    `json:"refresh_token"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	CreatedAt    time.Time `json:"created_at"`
-	LastUsedAt   time.Time `json:"last_used_at"`
-	UserAgent    string    `json:"user_agent"`
-	IPAddress    string    `json:"ip_address"`
+	ID               string    `json:"id"`
+	UserID           uuid.UUID `json:"user_id"`
+	RefreshToken     string    `json:"refresh_token"`
+	RefreshTokenHash string    `json:"refresh_token_hash"`
+	RefreshTokenJTI  string    `json:"refresh_token_jti"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	CreatedAt        time.Time `json:"created_at"`
+	LastUsedAt       time.Time `json:"last_used_at"`
+	UserAgent        string    `json:"user_agent"`
+	IPAddress        string    `json:"ip_address"`
 }
 
 type AuthResult struct {

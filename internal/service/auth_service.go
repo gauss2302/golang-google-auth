@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"googleAuth/internal/config"
 	"googleAuth/internal/domain"
+	"net/http"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type authenticationService struct {
@@ -33,7 +37,29 @@ const (
 	AccessTokenDuration  = 1 * time.Hour
 	RefreshTokenDuration = 30 * 24 * time.Hour
 	TempAuthCodeDuration = 5 * time.Minute
+	maxActiveSessions    = 10
 )
+
+type CookieConfig struct {
+	Name     string
+	Path     string
+	Domain   string
+	MaxAge   int
+	HttpOnly bool
+	Secure   bool
+	SameSite http.SameSite
+}
+
+func DefaultCookieConfig() *CookieConfig {
+	return &CookieConfig{
+		Name:     "refresh_token",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(RefreshTokenDuration.Seconds()),
+	}
+}
 
 func NewAuthenticationService(
 	cfg *config.Config,
@@ -204,15 +230,25 @@ func (s *authenticationService) GenerateTokenPair(userID uuid.UUID, userAgent, i
 		return nil, err
 	}
 
+	hashedRT, err := bcrypt.GenerateFromPassword([]byte(refreshToken), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+
 	session := &domain.Session{
-		ID:           sessionID,
-		UserID:       userID,
-		RefreshToken: refreshToken,
-		ExpiresAt:    time.Now().Add(RefreshTokenDuration),
-		CreatedAt:    time.Now(),
-		LastUsedAt:   time.Now(),
-		UserAgent:    userAgent,
-		IPAddress:    ipAddress,
+		ID:              sessionID,
+		UserID:          userID,
+		RefreshToken:    refreshToken,
+		RefreshTokenJTI: string(hashedRT),
+		ExpiresAt:       time.Now().Add(RefreshTokenDuration),
+		CreatedAt:       time.Now(),
+		LastUsedAt:      time.Now(),
+		UserAgent:       userAgent,
+		IPAddress:       ipAddress,
+	}
+
+	if err := s.enforceSessionLimit(context.Background(), userID); err != nil {
+		return nil, err
 	}
 
 	if err := s.sessionRepo.Create(context.Background(), session); err != nil {
@@ -242,13 +278,17 @@ func (s *authenticationService) generateAccessToken(userID uuid.UUID, sessionID 
 }
 
 func (s *authenticationService) generateRefreshToken(userID uuid.UUID, sessionID string) (string, error) {
+	jti := uuid.New().String()
+
 	claims := &Claims{
 		UserID:    userID,
 		SessionID: sessionID,
 		TokenType: "refresh",
+		JTI:       jti,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(RefreshTokenDuration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ID:        jti,
 		},
 	}
 
@@ -256,15 +296,7 @@ func (s *authenticationService) generateRefreshToken(userID uuid.UUID, sessionID
 	return token.SignedString([]byte(s.jwtSecret))
 }
 
-//func (s *authenticationService) ValidateAccessToken(tokenString string) (uuid.UUID, error) {
-//	authInfo, err := s.ValidateAccessTokenWithDetails(tokenString)
-//	if err != nil {
-//		return uuid.Nil, err
-//	}
-//	return authInfo.UserID, nil
-//}
-
-func (s *authenticationService) ValidateAccessTokenWithDetails(tokenString string) (*domain.AuthInfo, error) {
+func (s *authenticationService) ValidateAccessTokenWithDetails(ctx context.Context, tokenString string) (*domain.AuthInfo, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -301,14 +333,16 @@ func (s *authenticationService) ValidateAccessTokenWithDetails(tokenString strin
 		return nil, fmt.Errorf("session not found")
 	}
 
-	if time.Now().After(session.ExpiresAt) {
-		// Clean up expired session asynchronously
-		go s.sessionRepo.Delete(context.Background(), session.ID)
-		return nil, fmt.Errorf("session expired")
+	session.LastUsedAt = time.Now()
+	if err := s.sessionRepo.UpdateLastUsed(ctx, claims.SessionID); err != nil {
+
 	}
 
-	// Update last used time asynchronously
-	go s.sessionRepo.UpdateLastUsed(context.Background(), claims.SessionID)
+	go func() {
+		if err := s.sessionRepo.Delete(ctx, session.ID); err != nil {
+
+		}
+	}()
 
 	return &domain.AuthInfo{
 		UserID:    claims.UserID,
@@ -316,15 +350,32 @@ func (s *authenticationService) ValidateAccessTokenWithDetails(tokenString strin
 	}, nil
 }
 
-func (s *authenticationService) RefreshAccessToken(refreshToken, userAgent, ipAddress string) (*domain.TokenPair, error) {
+func (s *authenticationService) RefreshAccessToken(ctx context.Context, refreshToken, userAgent, ipAddress string) (*domain.TokenPair, error) {
+	claims, err := s.parseRefreshTokenClaims(ctx, refreshToken)
+
+	if err != nil {
+		return nil, err
+	}
 	session, err := s.sessionRepo.GetByRefreshToken(context.Background(), refreshToken)
 	if err != nil || session == nil {
 		return nil, fmt.Errorf("invalid refresh token")
 	}
 
+	if err := bcrypt.CompareHashAndPassword([]byte(session.RefreshToken), []byte(refreshToken)); err != nil {
+		s.sessionRepo.Delete(ctx, session.ID)
+	}
+
 	if time.Now().After(session.ExpiresAt) {
 		s.sessionRepo.Delete(context.Background(), session.ID)
 		return nil, fmt.Errorf("refresh token expired")
+	}
+
+	blacklisted, err := s.sessionRepo.IsTokenBlacklisted(ctx, claims.JTI)
+	if err != nil {
+		return nil, err
+	}
+	if blacklisted {
+		return nil, fmt.Errorf("token revoked")
 	}
 
 	newAccessToken, err := s.generateAccessToken(session.UserID, session.ID)
@@ -395,4 +446,96 @@ func (s *authenticationService) ExchangeAuthCode(authCode string) (*domain.AuthR
 	}
 
 	return &authResult, nil
+}
+
+func (s *authenticationService) enforceSessionLimit(ctx context.Context, userID uuid.UUID) error {
+	sessions, err := s.sessionRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	if len(sessions) < maxActiveSessions {
+		return nil
+	}
+	fmt.Print("ff")
+
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].LastUsedAt.Before(sessions[j].LastUsedAt)
+	})
+
+	excess := len(sessions) - maxActiveSessions - 1
+	errs := make(chan error, excess)
+	var wg sync.WaitGroup
+
+	for i := 0; i < excess; i++ {
+		sessionID := sessions[i].ID
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			errs <- s.sessionRepo.Delete(ctx, id)
+		}(sessionID)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *authenticationService) parseRefreshTokenClaims(ctx context.Context, refreshToken string) (*Claims, error) {
+	token, err := jwt.ParseWithClaims(refreshToken, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		} else if method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected HMAC algorithm: %v", method.Alg())
+		}
+		return []byte(s.jwtSecret), nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("invalid refresh token: %w", err)
+	}
+
+	claims, ok := token.Claims.(*Claims)
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("invalid refresh token claims")
+	}
+
+	// Backfill JTI from standard claim if not set explicitly.
+	if claims.JTI == "" {
+		claims.JTI = claims.ID
+	}
+
+	if claims.TokenType != "refresh" {
+		return nil, fmt.Errorf("invalid token type: expected refresh, got %s", claims.TokenType)
+	}
+
+	if claims.UserID == uuid.Nil {
+		return nil, fmt.Errorf("invalid user ID in token")
+	}
+
+	if claims.SessionID == "" {
+		return nil, fmt.Errorf("invalid session ID in token")
+	}
+
+	if claims.JTI == "" {
+		return nil, fmt.Errorf("missing token identifier")
+	}
+
+	blacklisted, err := s.sessionRepo.IsTokenBlacklisted(ctx, claims.JTI)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check token blacklist: %w", err)
+	}
+
+	if blacklisted {
+		return nil, fmt.Errorf("token revoked")
+	}
+
+	return claims, nil
 }

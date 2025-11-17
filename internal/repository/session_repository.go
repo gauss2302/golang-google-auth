@@ -5,29 +5,41 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/redis/go-redis/v9"
 	"googleAuth/internal/domain"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/google/uuid"
 )
 
 type sessionRepository struct {
-	client *redis.Client
+	client       *redis.Client
+	blacklistTTL time.Duration
 }
 
 func (r *sessionRepository) BlacklistToken(ctx context.Context, jti string, expiresAt time.Time) error {
-	//TODO implement me
-	panic("implement me")
+	key := fmt.Sprintf("blacklist:jti:%s", jti)
+	ttl := time.Until(expiresAt)
+
+	if ttl <= 0 {
+		ttl = r.blacklistTTL
+	}
+
+	return r.client.Set(ctx, key, "1", ttl).Err()
 }
 
 func (r *sessionRepository) IsTokenBlacklisted(ctx context.Context, jti string) (bool, error) {
-	//TODO implement me
-	panic("implement me")
+	key := fmt.Sprintf("blacklist:jti:%s", jti)
+	result, err := r.client.Exists(ctx, key).Result()
+	return result > 0, err
 }
 
 func NewSessionRepository(client *redis.Client) domain.SessionRepository {
-	return &sessionRepository{client: client}
+	return &sessionRepository{
+		client:       client,
+		blacklistTTL: 30 * 24 * time.Hour, // default JTI blacklist retention
+	}
 }
 
 func (r *sessionRepository) Create(ctx context.Context, session *domain.Session) error {
@@ -124,7 +136,10 @@ func (r *sessionRepository) Update(ctx context.Context, session *domain.Session)
 
 func (r *sessionRepository) Delete(ctx context.Context, sessionID string) error {
 	session, err := r.GetByID(ctx, sessionID)
-	if err != nil || session == nil {
+	if errors.Is(err, redis.Nil) || session == nil {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 

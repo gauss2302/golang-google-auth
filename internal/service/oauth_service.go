@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/idtoken"
 )
 
 type oauthService struct {
@@ -58,4 +59,18 @@ func (s *oauthService) GetUserInfo(ctx context.Context, token *oauth2.Token) (*d
 	}
 
 	return &userInfo, nil
+}
+
+func (s *oauthService) ValidateGoogleIDToken(ctx context.Context, idToken string) (*domain.GoogleUserInfo, error) {
+	payload, err := idtoken.Validate(ctx, idToken, s.config.ClientID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &domain.GoogleUserInfo{
+		ID:      payload.Subject,
+		Email:   payload.Claims["email"].(string),
+		Name:    payload.Claims["name"].(string),
+		Picture: payload.Claims["picture"].(string),
+	}, nil
 }
