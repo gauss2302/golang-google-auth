@@ -1,6 +1,6 @@
 # golang-google-auth
 
-This service provides OAuth-based authentication flows (Google, Twitter), session management, and CSRF protection for API clients built with Gin and net/http handlers.
+This service provides OAuth-based authentication flows (Google, Twitter), session management, and CSRF protection for API clients built with Gin.
 
 ## Configuration
 

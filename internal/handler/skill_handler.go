@@ -42,6 +42,13 @@ func (h *SkillHandler) CreateSkill(c *gin.Context) {
 	// Создаем навык через сервисный слой
 	skill, err := h.skillService.CreateSkill(c.Request.Context(), userID.(uuid.UUID), &req)
 	if err != nil {
+		if validationErrs, ok := err.(domain.ValidationErrors); ok {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "Validation failed",
+				"details": validationErrs,
+			})
+			return
+		}
 		// Проверяем, является ли это ошибкой валидации из вашей системы
 		if validationErr, ok := err.(*domain.ValidationError); ok {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -90,6 +97,13 @@ func (h *SkillHandler) GetUserSkills(c *gin.Context) {
 	}
 
 	if err != nil {
+		if validationErrs, ok := err.(domain.ValidationErrors); ok {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "Invalid request",
+				"details": validationErrs,
+			})
+			return
+		}
 		// Проверяем ошибку валидации категории
 		if validationErr, ok := err.(*domain.ValidationError); ok {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -188,6 +202,13 @@ func (h *SkillHandler) UpdateSkill(c *gin.Context) {
 	// Обновляем навык через сервис
 	skill, err := h.skillService.UpdateSkill(c.Request.Context(), skillID, userID.(uuid.UUID), &req)
 	if err != nil {
+		if validationErrs, ok := err.(domain.ValidationErrors); ok {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "Validation failed",
+				"details": validationErrs,
+			})
+			return
+		}
 		// Проверяем тип ошибки
 		if validationErr, ok := err.(*domain.ValidationError); ok {
 			c.JSON(http.StatusBadRequest, gin.H{

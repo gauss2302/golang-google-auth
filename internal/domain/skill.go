@@ -29,8 +29,8 @@ var ValidSkillCategories = map[string]bool{
 type Skill struct {
 	ID          uuid.UUID `json:"id" db:"id"`
 	UserID      uuid.UUID `json:"user_id" db:"user_id" validate:"required"`
-	Name        string    `json:"name" db:"name" validate:"required,min=1,max=100"`
-	Category    string    `json:"category" db:"category" validate:"omitempty,oneof=language framework tool database other"`
+	Name        string    `json:"name" db:"name" validate:"required,max=100"`
+	Category    string    `json:"category" db:"category" validate:"required,oneof=language framework tool database other"`
 	Proficiency int       `json:"proficiency,omitempty" db:"proficiency" validate:"omitempty,min=1,max=5"`
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
@@ -38,7 +38,18 @@ type Skill struct {
 
 // Validate выполняет валидацию навыка через общий валидатор пакета.
 func (s *Skill) Validate() error {
-	return formatValidationErrors("skill", domainValidator.Struct(s))
+	return ValidateStruct(s)
+}
+
+// Вспомогательные функции
+
+// GetSkillCategoryKeys возвращает все валидные категории навыков
+func getSkillCategoryKeys() []string {
+	keys := make([]string, 0, len(ValidSkillCategories))
+	for k := range ValidSkillCategories {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func GetSkillCategoryKeys() []string {
