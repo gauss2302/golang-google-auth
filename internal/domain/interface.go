@@ -37,6 +37,7 @@ type OAuthService interface {
 	GetAuthURL(state string) string
 	ExchangeCode(ctx context.Context, code string) (*oauth2.Token, error)
 	GetUserInfo(ctx context.Context, token *oauth2.Token) (*GoogleUserInfo, error)
+	ValidateGoogleIDToken(ctx context.Context, idToken string) (*GoogleUserInfo, error)
 }
 
 type TwitterOAuthService interface {
@@ -51,6 +52,7 @@ type AuthenticationService interface {
 	CompleteGoogleAuth(ctx context.Context, code, state, userAgent, ipAddress string) (*AuthResult, error)
 	InitiateTwitterAuth(state string) string
 	CompleteTwitterAuth(ctx context.Context, code, state, userAgent, ipAddress string) (*AuthResult, error)
+	AuthenticateWithGoogleIDToken(ctx context.Context, idToken, userAgent, ipAddress string) (*AuthResult, error)
 
 	// Token management
 	GenerateTokenPair(userID uuid.UUID, userAgent, ipAddress string) (*TokenPair, error)

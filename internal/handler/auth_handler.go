@@ -84,6 +84,53 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 }
 
+func (h *AuthHandler) MobileLogin(c *gin.Context) {
+	h.handleMobileAuth(c, http.StatusOK)
+}
+
+func (h *AuthHandler) MobileRegister(c *gin.Context) {
+	h.handleMobileAuth(c, http.StatusCreated)
+}
+
+func (h *AuthHandler) handleMobileAuth(c *gin.Context, successStatus int) {
+	var req struct {
+		IDToken string `json:"id_token" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userAgent := c.GetHeader("User-Agent")
+	ipAddress := c.ClientIP()
+
+	authResult, err := h.authService.AuthenticateWithGoogleIDToken(c.Request.Context(), req.IDToken, userAgent, ipAddress)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid ID token"})
+		return
+	}
+
+	if authResult.Tokens == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Token generation failed"})
+		return
+	}
+
+	h.setRefreshTokenCookie(c, authResult.Tokens.RefreshToken)
+
+	c.JSON(successStatus, gin.H{
+		"user": authResult.User,
+		"tokens": gin.H{
+			"access_token": authResult.Tokens.AccessToken,
+			"session_id":   authResult.Tokens.SessionID,
+		},
+		"session": gin.H{
+			"id":                 authResult.Tokens.SessionID,
+			"refresh_expires_at": time.Now().Add(service.RefreshTokenDuration),
+		},
+	})
+}
+
 func (h *AuthHandler) TwitterAuth(c *gin.Context) {
 	state := uuid.New().String()
 
