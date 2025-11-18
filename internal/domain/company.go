@@ -136,7 +136,7 @@ type Company struct {
 type CompanyHeadHunter struct {
 	FirstName string    `json:"first_name" db:"first_name"`
 	LastName  string    `json:"last_name" db:"last_name"`
-	CompanyId uuid.UUID `json:"company_id" db:"company_id"`
+	CompanyID uuid.UUID `json:"company_id" db:"company_id"`
 }
 
 func (hh *CompanyHeadHunter) GetFullName() string {
