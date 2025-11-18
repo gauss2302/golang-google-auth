@@ -67,10 +67,14 @@ func (s *oauthService) ValidateGoogleIDToken(ctx context.Context, idToken string
 		return nil, err
 	}
 
+	email, _ := payload.Claims["email"].(string)
+	name, _ := payload.Claims["name"].(string)
+	picture, _ := payload.Claims["picture"].(string)
+
 	return &domain.GoogleUserInfo{
 		ID:      payload.Subject,
-		Email:   payload.Claims["email"].(string),
-		Name:    payload.Claims["name"].(string),
-		Picture: payload.Claims["picture"].(string),
+		Email:   email,
+		Name:    name,
+		Picture: picture,
 	}, nil
 }

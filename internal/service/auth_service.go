@@ -145,6 +145,32 @@ func (s *authenticationService) CompleteTwitterAuth(ctx context.Context, code, s
 	}, nil
 }
 
+func (s *authenticationService) AuthenticateWithGoogleIDToken(ctx context.Context, idToken, userAgent, ipAddress string) (*domain.AuthResult, error) {
+	if idToken == "" {
+		return nil, fmt.Errorf("id token is required")
+	}
+
+	userInfo, err := s.oauthSvc.ValidateGoogleIDToken(ctx, idToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate google id token: %w", err)
+	}
+
+	user, err := s.findOrCreateGoogleUser(ctx, userInfo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find or create user: %w", err)
+	}
+
+	tokenPair, err := s.GenerateTokenPair(user.ID, userAgent, ipAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate tokens: %w", err)
+	}
+
+	return &domain.AuthResult{
+		User:   user,
+		Tokens: tokenPair,
+	}, nil
+}
+
 func (s *authenticationService) findOrCreateGoogleUser(ctx context.Context, userInfo *domain.GoogleUserInfo) (*domain.User, error) {
 	// Try to find existing user
 	existingUser, err := s.userRepo.GetByGoogleID(ctx, userInfo.ID)

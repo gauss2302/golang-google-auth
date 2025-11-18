@@ -160,6 +160,8 @@ func setupRouter(
 				middleware.AuthMiddleware(cfg.JWTSecret),
 				authHandler.Logout)
 			auth.POST("/exchange-code", csrfProtection.GinMiddleware(), authHandler.ExchangeAuthCode)
+			auth.POST("/mobile/login", authHandler.MobileLogin)
+			auth.POST("/mobile/register", authHandler.MobileRegister)
 
 			// Session management
 			auth.GET("/sessions",
