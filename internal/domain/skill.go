@@ -36,7 +36,7 @@ type Skill struct {
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
 
-// Validate выполняет валидацию навыка, используя существующую ValidationError из вашего проекта
+// Validate выполняет валидацию навыка через общий валидатор пакета.
 func (s *Skill) Validate() error {
 	return ValidateStruct(s)
 }

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -106,37 +107,28 @@ func (e *Education) GetFullDescription() string {
 type EducationCollection []*Education
 
 func (ec EducationCollection) Validate() error {
-	var errors ValidationErrors
+	var errs []error
 
 	for i, education := range ec {
 		if education == nil {
-			errors = append(errors, NewValidationError(
-				fmt.Sprintf("[%d]", i),
-				"education entry cannot be nil",
-				ErrInvalidField))
+			errs = append(errs, fmt.Errorf("education[%d]: entry cannot be nil", i))
 			continue
 		}
 
-		// Sanitize before validation
 		education.BeforeSave()
 
 		if err := education.Validate(); err != nil {
-			if validationErrs, ok := err.(ValidationErrors); ok {
-				for _, validationErr := range validationErrs {
-					validationErr.Field = fmt.Sprintf("[%d].%s", i, validationErr.Field)
-					errors = append(errors, validationErr)
-				}
-			} else {
-				errors = append(errors, NewValidationError(
-					fmt.Sprintf("[%d]", i),
-					err.Error(),
-					ErrInvalidField))
+			if validationErrs, ok := err.(validator.ValidationErrors); ok {
+				errs = append(errs, fmt.Errorf("education[%d]: %w", i, validationErrs))
+				continue
 			}
+
+			errs = append(errs, fmt.Errorf("education[%d]: %w", i, err))
 		}
 	}
 
-	if len(errors) > 0 {
-		return errors
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
@@ -245,11 +237,12 @@ func (ec *EducationCollection) RemoveNilEntries() {
 // AddEducation safely adds an education entry to the collection
 func (ec *EducationCollection) AddEducation(education *Education) error {
 	if education == nil {
-		return NewValidationError("education", "cannot add nil education", ErrInvalidField)
+		return fmt.Errorf("education: cannot add nil education")
 	}
 
 	// Validate before adding
-	if err := ValidateAndSanitize(education); err != nil {
+	education.BeforeSave()
+	if err := education.Validate(); err != nil {
 		return err
 	}
 
@@ -275,10 +268,4 @@ func NewEducation() *Education {
 // Helper function to create a new EducationCollection
 func NewEducationCollection() EducationCollection {
 	return make(EducationCollection, 0)
-}
-
-// Helper function that works with the existing validation framework
-func ValidateAndSanitize(model DomainModel) error {
-	model.BeforeSave()
-	return model.Validate()
 }

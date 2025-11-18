@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"encoding/json"
 	"fmt"
 	"github.com/go-playground/validator/v10"
 	"github.com/microcosm-cc/bluemonday"
@@ -11,116 +10,83 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-playground/validator/v10"
+	"github.com/microcosm-cc/bluemonday"
 )
 
-// Validation error types
-type ValidationErrorType string
+var domainValidator *validator.Validate
 
-const (
-	ErrRequired     ValidationErrorType = "required"
-	ErrInvalidField ValidationErrorType = "invalid_field"
-	ErrDateRange    ValidationErrorType = "date_range"
-	ErrInvalidURL   ValidationErrorType = "invalid_url"
-	ErrInvalidEmail ValidationErrorType = "invalid_email"
-	ErrMinLength    ValidationErrorType = "min_length"
-	ErrMaxLength    ValidationErrorType = "max_length"
-	ErrInvalidEnum  ValidationErrorType = "invalid_enum"
-	ErrXSSDetected  ValidationErrorType = "xss_detected"
-)
+func init() {
+	domainValidator = validator.New()
 
-// ValidationError represents a single field validation error
-type ValidationError struct {
-	Field   string              `json:"field"`
-	Message string              `json:"message"`
-	Type    ValidationErrorType `json:"type"`
-	Value   interface{}         `json:"value,omitempty"`
+	domainValidator.RegisterValidation("present_or_date", validatePresentOrDate)
+	domainValidator.RegisterStructValidation(educationStructValidation, Education{})
+	domainValidator.RegisterStructValidation(experienceStructValidation, Experience{})
 }
 
-func (e ValidationError) Error() string {
-	return fmt.Sprintf("validation error on field '%s': %s", e.Field, e.Message)
+func validatePresentOrDate(fl validator.FieldLevel) bool {
+	value := fl.Field().String()
+	if value == "" {
+		return true
+	}
+	if value == "Present" {
+		return true
+	}
+
+	_, err := time.Parse("2006-01-02", value)
+	return err == nil
 }
 
-func NewValidationError(field, message string, errType ValidationErrorType) ValidationError {
-	return ValidationError{
-		Field:   field,
-		Message: message,
-		Type:    errType,
+func educationStructValidation(sl validator.StructLevel) {
+	education := sl.Current().Interface().(Education)
+
+	if education.EndDate == "" || education.EndDate == "Present" {
+		return
+	}
+
+	start, startErr := time.Parse("2006-01-02", education.StartDate)
+	end, endErr := time.Parse("2006-01-02", education.EndDate)
+
+	if startErr != nil || endErr != nil {
+		return
+	}
+
+	if end.Before(start) {
+		sl.ReportError(education.EndDate, "EndDate", "end_date", "after_start", "")
 	}
 }
 
-// ValidationErrors represents multiple validation errors
-type ValidationErrors []ValidationError
+func experienceStructValidation(sl validator.StructLevel) {
+	experience := sl.Current().Interface().(Experience)
 
-func (e ValidationErrors) Error() string {
-	if len(e) == 0 {
-		return ""
+	if experience.EndDate == "" || experience.EndDate == "Present" {
+		return
 	}
-	if len(e) == 1 {
-		return e[0].Error()
+
+	start, startErr := time.Parse("2006-01-02", experience.StartDate)
+	end, endErr := time.Parse("2006-01-02", experience.EndDate)
+
+	if startErr != nil || endErr != nil {
+		return
 	}
-	return fmt.Sprintf("validation failed with %d errors", len(e))
-}
 
-func (e ValidationErrors) HasErrors() bool {
-	return len(e) > 0
-}
-
-func (e ValidationErrors) GetFieldErrors(field string) []ValidationError {
-	var errors []ValidationError
-	for _, err := range e {
-		if err.Field == field {
-			errors = append(errors, err)
-		}
+	if end.Before(start) {
+		sl.ReportError(experience.EndDate, "EndDate", "end_date", "after_start", "")
 	}
-	return errors
 }
 
-// Core interfaces using generics
-type Validator interface {
-	Validate() error
-}
-
-type Sanitizer interface {
-	BeforeSave()
-}
-
-type JSONMarshaler interface {
-	ToJSON() ([]byte, error)
-	FromJSON(data []byte) error
-}
-
-type DomainModel interface {
-	Validator
-	Sanitizer
-	JSONMarshaler
-}
-
-// Generic validator interface
-type GenericValidator[T any] interface {
-	Validate(value T) error
-}
-
-// Security sanitizer using Blue Monday
+// SecuritySanitizer provides HTML sanitization helpers.
 type SecuritySanitizer struct {
 	policy *bluemonday.Policy
 }
 
 func NewSecuritySanitizer() *SecuritySanitizer {
-	// Create a strict policy for user content
-	policy := bluemonday.StrictPolicy()
-
-	return &SecuritySanitizer{
-		policy: policy,
-	}
+	return &SecuritySanitizer{policy: bluemonday.StrictPolicy()}
 }
 
 func NewUGCSanitizer() *SecuritySanitizer {
-	// More permissive policy for rich content
-	policy := bluemonday.UGCPolicy()
-
-	return &SecuritySanitizer{
-		policy: policy,
-	}
+	return &SecuritySanitizer{policy: bluemonday.UGCPolicy()}
 }
 
 func (s *SecuritySanitizer) SanitizeString(input string) string {
@@ -135,159 +101,13 @@ func (s *SecuritySanitizer) SanitizeStrings(inputs ...string) []string {
 	return result
 }
 
-// Validation builder with generics support
-type ValidationBuilder[T any] struct {
-	errors    ValidationErrors
-	sanitizer *SecuritySanitizer
-}
-
-func NewValidationBuilder[T any]() *ValidationBuilder[T] {
-	return &ValidationBuilder[T]{
-		errors:    make(ValidationErrors, 0),
-		sanitizer: NewSecuritySanitizer(),
-	}
-}
-
-func NewValidationBuilderWithSanitizer[T any](sanitizer *SecuritySanitizer) *ValidationBuilder[T] {
-	return &ValidationBuilder[T]{
-		errors:    make(ValidationErrors, 0),
-		sanitizer: sanitizer,
-	}
-}
-
-func (vb *ValidationBuilder[T]) Field(field string, value interface{}) *FieldValidator[T] {
-	return &FieldValidator[T]{
-		builder: vb,
-		field:   field,
-		value:   value,
-	}
-}
-
-func (vb *ValidationBuilder[T]) Build() error {
-	if len(vb.errors) > 0 {
-		return vb.errors
-	}
-	return nil
-}
-
-func (vb *ValidationBuilder[T]) addError(field, message string, errType ValidationErrorType, value interface{}) {
-	vb.errors = append(vb.errors, ValidationError{
-		Field:   field,
-		Message: message,
-		Type:    errType,
-		Value:   value,
-	})
-}
-
-// Generic field validator
-type FieldValidator[T any] struct {
-	builder *ValidationBuilder[T]
-	field   string
-	value   interface{}
-}
-
-func (fv *FieldValidator[T]) Required() *FieldValidator[T] {
-	if fv.isEmpty() {
-		fv.builder.addError(fv.field, fv.field+" is required", ErrRequired, fv.value)
-	}
-	return fv
-}
-
-func (fv *FieldValidator[T]) String() *StringValidator[T] {
-	str, ok := fv.value.(string)
-	if !ok {
-		fv.builder.addError(fv.field, "expected string value", ErrInvalidField, fv.value)
-		return &StringValidator[T]{fv, ""}
-	}
-	return &StringValidator[T]{fv, str}
-}
-
-func (fv *FieldValidator[T]) StringSlice() *StringSliceValidator[T] {
-	slice, ok := fv.value.([]string)
-	if !ok {
-		fv.builder.addError(fv.field, "expected string slice value", ErrInvalidField, fv.value)
-		return &StringSliceValidator[T]{fv, nil}
-	}
-	return &StringSliceValidator[T]{fv, slice}
-}
-
-func (fv *FieldValidator[T]) Date() *DateValidator[T] {
-	str, ok := fv.value.(string)
-	if !ok {
-		fv.builder.addError(fv.field, "expected string date value", ErrInvalidField, fv.value)
-		return &DateValidator[T]{fv, ""}
-	}
-	return &DateValidator[T]{fv, str}
-}
-
-func (fv *FieldValidator[T]) URL() *FieldValidator[T] {
-	if str, ok := fv.value.(string); ok && str != "" {
-		if _, err := url.ParseRequestURI(str); err != nil {
-			fv.builder.addError(fv.field, "invalid URL format", ErrInvalidURL, fv.value)
-		}
-	}
-	return fv
-}
-
-func (fv *FieldValidator[T]) Email() *FieldValidator[T] {
-	if str, ok := fv.value.(string); ok && str != "" {
-		emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-		if !emailRegex.MatchString(str) {
-			fv.builder.addError(fv.field, "invalid email format", ErrInvalidEmail, fv.value)
-		}
-	}
-	return fv
-}
-
-func (fv *FieldValidator[T]) OneOf(values ...string) *FieldValidator[T] {
-	if str, ok := fv.value.(string); ok && str != "" {
-		for _, v := range values {
-			if str == v {
-				return fv
-			}
-		}
-		fv.builder.addError(fv.field, fmt.Sprintf("must be one of: %v", values), ErrInvalidEnum, fv.value)
-	}
-	return fv
-}
-
-func (fv *FieldValidator[T]) SecureSanitize() *FieldValidator[T] {
-	if str, ok := fv.value.(string); ok && str != "" {
-		sanitized := fv.builder.sanitizer.SanitizeString(str)
-		if sanitized != str {
-			fv.builder.addError(fv.field, "content contains potentially unsafe HTML", ErrXSSDetected, fv.value)
-		}
-	}
-	return fv
-}
-
-func (fv *FieldValidator[T]) isEmpty() bool {
-	if fv.value == nil {
-		return true
+func formatValidationErrors(prefix string, err error) error {
+	if err == nil {
+		return nil
 	}
 
-	v := reflect.ValueOf(fv.value)
-	switch v.Kind() {
-	case reflect.String:
-		return strings.TrimSpace(v.String()) == ""
-	case reflect.Slice, reflect.Map, reflect.Array:
-		return v.Len() == 0
-	case reflect.Ptr:
-		return v.IsNil()
-	default:
-		return false
-	}
-}
-
-// String validator with generics
-type StringValidator[T any] struct {
-	*FieldValidator[T]
-	value string
-}
-
-func (sv *StringValidator[T]) MinLength(min int) *StringValidator[T] {
-	if len(strings.TrimSpace(sv.value)) < min {
-		sv.builder.addError(sv.field, fmt.Sprintf("minimum length is %d characters", min), ErrMinLength, sv.value)
+	if validationErrs, ok := err.(validator.ValidationErrors); ok {
+		return fmt.Errorf("%s: %w", prefix, validationErrs)
 	}
 	return sv
 }
@@ -558,6 +378,5 @@ func MarshalJSON[T any](v T) ([]byte, error) {
 	return json.Marshal(v)
 }
 
-func UnmarshalJSON[T any](data []byte, v *T) error {
-	return json.Unmarshal(data, v)
+	return fmt.Errorf("%s: %w", prefix, err)
 }
