@@ -152,8 +152,6 @@ func (hh *CompanyHeadHunter) GetFullName() string {
 	return strings.Join(parts, " ")
 }
 
-func (c *Company) CompanyValidate() {
-	vb := NewValidationBuilder[Company]()
-
-	vb.Field("name", c.Name).Required().String().NotEmpty().MaxLength(40).SecureSanitize()
+func (c *Company) Validate() error {
+	return formatValidationErrors("company", domainValidator.Struct(c))
 }

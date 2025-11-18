@@ -55,6 +55,7 @@ func main() {
 		CookieDomain:   "",
 		CookieMaxAge:   86400,
 		CookieSameSite: http.SameSiteStrictMode,
+		TokenTTL:       cfg.CSRFTokenTTL,
 	})
 
 	// Инициализируем репозитории
