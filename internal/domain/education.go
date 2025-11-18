@@ -1,85 +1,26 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/go-playground/validator/v10"
 )
 
 type Education struct {
-	Institution string `json:"institution"`
-	Location    string `json:"location"`
-	Degree      string `json:"degree"`
-	Field       string `json:"field"`
-	StartDate   string `json:"start_date"` // Format: YYYY-MM-DD
-	EndDate     string `json:"end_date"`   // Format: YYYY-MM-DD or "Present"
-	Description string `json:"description"`
-	GPA         string `json:"gpa,omitempty"`
+	Institution string `json:"institution" validate:"required,max=200"`
+	Location    string `json:"location" validate:"omitempty,max=200"`
+	Degree      string `json:"degree" validate:"required,max=200"`
+	Field       string `json:"field" validate:"omitempty,max=200"`
+	StartDate   string `json:"start_date" validate:"required,datetime=2006-01-02"` // Format: YYYY-MM-DD
+	EndDate     string `json:"end_date" validate:"omitempty,present_or_date"`      // Format: YYYY-MM-DD or "Present"
+	Description string `json:"description" validate:"omitempty,max=1000"`
+	GPA         string `json:"gpa,omitempty" validate:"omitempty,numeric"`
 }
 
 func (e *Education) Validate() error {
-	vb := NewValidationBuilder[*Education]()
-
-	// Required fields with security sanitization
-	vb.Field("institution", e.Institution).
-		Required().
-		String().
-		NotEmpty().
-		MaxLength(200).
-		SecureSanitize()
-
-	vb.Field("degree", e.Degree).
-		Required().
-		String().
-		NotEmpty().
-		MaxLength(200).
-		SecureSanitize()
-
-	vb.Field("start_date", e.StartDate).
-		Required().
-		Date().
-		ISO8601()
-
-	// Optional fields validation
-	if e.Location != "" {
-		vb.Field("location", e.Location).
-			String().
-			MaxLength(200).
-			SecureSanitize()
-	}
-
-	if e.Field != "" {
-		vb.Field("field", e.Field).
-			String().
-			MaxLength(200).
-			SecureSanitize()
-	}
-
-	// End date validation with special handling for "Present"
-	if e.EndDate != "" {
-		if e.EndDate == "Present" {
-			// "Present" is valid, no further validation needed
-		} else {
-			vb.Field("end_date", e.EndDate).
-				Date().
-				ISO8601().
-				After(e.StartDate)
-		}
-	}
-
-	if e.Description != "" {
-		vb.Field("description", e.Description).
-			String().
-			MaxLength(1000).
-			SecureSanitize()
-	}
-
-	if e.GPA != "" {
-		vb.Field("gpa", e.GPA).
-			String().
-			Pattern(`^\d+\.?\d*$`, "GPA must be a valid number (e.g., 3.5, 4.0)")
-	}
-
-	return vb.Build()
+	return formatValidationErrors("education", domainValidator.Struct(e))
 }
 
 func (e *Education) BeforeSave() {
@@ -155,37 +96,28 @@ func (e *Education) GetFullDescription() string {
 type EducationCollection []*Education
 
 func (ec EducationCollection) Validate() error {
-	var errors ValidationErrors
+	var errs []error
 
 	for i, education := range ec {
 		if education == nil {
-			errors = append(errors, NewValidationError(
-				fmt.Sprintf("[%d]", i),
-				"education entry cannot be nil",
-				ErrInvalidField))
+			errs = append(errs, fmt.Errorf("education[%d]: entry cannot be nil", i))
 			continue
 		}
 
-		// Sanitize before validation
 		education.BeforeSave()
 
 		if err := education.Validate(); err != nil {
-			if validationErrs, ok := err.(ValidationErrors); ok {
-				for _, validationErr := range validationErrs {
-					validationErr.Field = fmt.Sprintf("[%d].%s", i, validationErr.Field)
-					errors = append(errors, validationErr)
-				}
-			} else {
-				errors = append(errors, NewValidationError(
-					fmt.Sprintf("[%d]", i),
-					err.Error(),
-					ErrInvalidField))
+			if validationErrs, ok := err.(validator.ValidationErrors); ok {
+				errs = append(errs, fmt.Errorf("education[%d]: %w", i, validationErrs))
+				continue
 			}
+
+			errs = append(errs, fmt.Errorf("education[%d]: %w", i, err))
 		}
 	}
 
-	if len(errors) > 0 {
-		return errors
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
@@ -294,11 +226,12 @@ func (ec *EducationCollection) RemoveNilEntries() {
 // AddEducation safely adds an education entry to the collection
 func (ec *EducationCollection) AddEducation(education *Education) error {
 	if education == nil {
-		return NewValidationError("education", "cannot add nil education", ErrInvalidField)
+		return fmt.Errorf("education: cannot add nil education")
 	}
 
 	// Validate before adding
-	if err := ValidateAndSanitize(education); err != nil {
+	education.BeforeSave()
+	if err := education.Validate(); err != nil {
 		return err
 	}
 
@@ -324,10 +257,4 @@ func NewEducation() *Education {
 // Helper function to create a new EducationCollection
 func NewEducationCollection() EducationCollection {
 	return make(EducationCollection, 0)
-}
-
-// Helper function that works with the existing validation framework
-func ValidateAndSanitize(model DomainModel) error {
-	model.BeforeSave()
-	return model.Validate()
 }

@@ -136,7 +136,7 @@ type Company struct {
 type CompanyHeadHunter struct {
 	FirstName string    `json:"first_name" db:"first_name"`
 	LastName  string    `json:"last_name" db:"last_name"`
-	CompanyId uuid.UUID `json:"company_id" db:"company_id"`
+	CompanyID uuid.UUID `json:"company_id" db:"company_id"`
 }
 
 func (hh *CompanyHeadHunter) GetFullName() string {
@@ -152,8 +152,6 @@ func (hh *CompanyHeadHunter) GetFullName() string {
 	return strings.Join(parts, " ")
 }
 
-func (c *Company) CompanyValidate() {
-	vb := NewValidationBuilder[Company]()
-
-	vb.Field("name", c.Name).Required().String().NotEmpty().MaxLength(40).SecureSanitize()
+func (c *Company) Validate() error {
+	return formatValidationErrors("company", domainValidator.Struct(c))
 }

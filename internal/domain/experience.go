@@ -1,48 +1,19 @@
 package domain
 
-import (
-	"strings"
-)
+import "strings"
 
 type Experience struct {
-	Employer     string   `json:"employer"`
-	JobTitle     string   `json:"title"`
-	Location     string   `json:"location"`
-	StartDate    string   `json:"start_date"` // Format: YYYY-MM-DD
-	EndDate      string   `json:"end_date"`   // Format: YYYY-MM-DD or "Present"
-	Description  string   `json:"description"`
-	Achievements []string `json:"achievements,omitempty"`
+	Employer     string   `json:"employer" validate:"required,min=1,max=200"`
+	JobTitle     string   `json:"title" validate:"required,min=1,max=200"`
+	Location     string   `json:"location" validate:"omitempty,max=200"`
+	StartDate    string   `json:"start_date" validate:"required,datetime=2006-01-02"` // Format: YYYY-MM-DD
+	EndDate      string   `json:"end_date" validate:"omitempty,present_or_date"`      // Format: YYYY-MM-DD or "Present"
+	Description  string   `json:"description" validate:"omitempty,max=2000"`
+	Achievements []string `json:"achievements,omitempty" validate:"omitempty,max=20,dive,max=500"`
 }
 
 func (e *Experience) Validate() error {
-	vb := NewValidationBuilder[Experience]()
-
-	vb.Field("employer", e.Employer).Required().String().NotEmpty().MaxLength(200).SecureSanitize()
-	vb.Field("title", e.JobTitle).Required().String().NotEmpty().MaxLength(200).SecureSanitize()
-	vb.Field("start_date", e.StartDate).Required().Date().ISO8601()
-
-	if e.Location != "" {
-		vb.Field("location", e.Location).String().MaxLength(200).SecureSanitize()
-	}
-
-	if e.EndDate != "" {
-		if e.EndDate != "Present" {
-			vb.Field("end_date", e.EndDate).Date().ISO8601().After(e.EndDate)
-		}
-	}
-
-	if e.Description != "" {
-		vb.Field("description", e.Description).String().MaxLength(2000).SecureSanitize()
-	}
-
-	if len(e.Achievements) > 0 {
-		vb.Field("achievements", e.Achievements).StringSlice().
-			MaxLength(20).
-			EachMaxLength(500).
-			EachSecureSanitize()
-	}
-
-	return vb.Build()
+	return formatValidationErrors("experience", domainValidator.Struct(e))
 }
 
 func (e *Experience) BeforeSave() {
