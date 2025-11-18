@@ -226,7 +226,7 @@ func (s *authenticationService) GenerateTokenPair(userID uuid.UUID, userAgent, i
 		return nil, err
 	}
 
-	refreshToken, err := s.generateRefreshToken(userID, sessionID)
+	refreshToken, refreshTokenJTI, err := s.generateRefreshToken(userID, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -237,15 +237,16 @@ func (s *authenticationService) GenerateTokenPair(userID uuid.UUID, userAgent, i
 	}
 
 	session := &domain.Session{
-		ID:              sessionID,
-		UserID:          userID,
-		RefreshToken:    refreshToken,
-		RefreshTokenJTI: string(hashedRT),
-		ExpiresAt:       now.Add(RefreshTokenDuration),
-		CreatedAt:       now,
-		LastUsedAt:      now,
-		UserAgent:       userAgent,
-		IPAddress:       ipAddress,
+		ID:               sessionID,
+		UserID:           userID,
+		RefreshToken:     refreshToken,
+		RefreshTokenHash: string(hashedRT),
+		RefreshTokenJTI:  refreshTokenJTI,
+		ExpiresAt:        now.Add(RefreshTokenDuration),
+		CreatedAt:        now,
+		LastUsedAt:       now,
+		UserAgent:        userAgent,
+		IPAddress:        ipAddress,
 	}
 
 	if err := s.enforceSessionLimit(context.Background(), userID); err != nil {
@@ -278,7 +279,7 @@ func (s *authenticationService) generateAccessToken(userID uuid.UUID, sessionID 
 	return token.SignedString([]byte(s.jwtSecret))
 }
 
-func (s *authenticationService) generateRefreshToken(userID uuid.UUID, sessionID string) (string, error) {
+func (s *authenticationService) generateRefreshToken(userID uuid.UUID, sessionID string) (string, string, error) {
 	jti := uuid.New().String()
 
 	claims := &Claims{
@@ -294,7 +295,12 @@ func (s *authenticationService) generateRefreshToken(userID uuid.UUID, sessionID
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.jwtSecret))
+	signedToken, err := token.SignedString([]byte(s.jwtSecret))
+	if err != nil {
+		return "", "", err
+	}
+
+	return signedToken, jti, nil
 }
 
 func (s *authenticationService) ValidateAccessTokenWithDetails(ctx context.Context, tokenString string) (*domain.AuthInfo, error) {
@@ -336,7 +342,7 @@ func (s *authenticationService) ValidateAccessTokenWithDetails(ctx context.Conte
 
 	session.LastUsedAt = time.Now()
 	if err := s.sessionRepo.UpdateLastUsed(ctx, claims.SessionID); err != nil {
-			return nil, fmt.Errorf("failed to update session last used: %w", err)
+		return nil, fmt.Errorf("failed to update session last used: %w", err)
 	}
 
 	return &domain.AuthInfo{
@@ -357,9 +363,14 @@ func (s *authenticationService) RefreshAccessToken(ctx context.Context, refreshT
 		return nil, fmt.Errorf("invalid refresh token")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(session.RefreshToken), []byte(refreshToken)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(session.RefreshTokenHash), []byte(refreshToken)); err != nil {
 		_ = s.sessionRepo.Delete(ctx, session.ID)
 		return nil, fmt.Errorf("invalid refresh token")
+	}
+
+	if session.RefreshTokenJTI != "" && session.RefreshTokenJTI != claims.JTI {
+		_ = s.sessionRepo.Delete(ctx, session.ID)
+		return nil, fmt.Errorf("refresh token identifier mismatch")
 	}
 
 	if time.Now().After(session.ExpiresAt) {
