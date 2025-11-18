@@ -219,6 +219,7 @@ func (s *authenticationService) findOrCreateTwitterUser(ctx context.Context, use
 // Token management methods
 func (s *authenticationService) GenerateTokenPair(userID uuid.UUID, userAgent, ipAddress string) (*domain.TokenPair, error) {
 	sessionID := uuid.New().String()
+	now := time.Now()
 
 	accessToken, err := s.generateAccessToken(userID, sessionID)
 	if err != nil {
@@ -240,9 +241,9 @@ func (s *authenticationService) GenerateTokenPair(userID uuid.UUID, userAgent, i
 		UserID:          userID,
 		RefreshToken:    refreshToken,
 		RefreshTokenJTI: string(hashedRT),
-		ExpiresAt:       time.Now().Add(RefreshTokenDuration),
-		CreatedAt:       time.Now(),
-		LastUsedAt:      time.Now(),
+		ExpiresAt:       now.Add(RefreshTokenDuration),
+		CreatedAt:       now,
+		LastUsedAt:      now,
 		UserAgent:       userAgent,
 		IPAddress:       ipAddress,
 	}
@@ -335,14 +336,8 @@ func (s *authenticationService) ValidateAccessTokenWithDetails(ctx context.Conte
 
 	session.LastUsedAt = time.Now()
 	if err := s.sessionRepo.UpdateLastUsed(ctx, claims.SessionID); err != nil {
-
+			return nil, fmt.Errorf("failed to update session last used: %w", err)
 	}
-
-	go func() {
-		if err := s.sessionRepo.Delete(ctx, session.ID); err != nil {
-
-		}
-	}()
 
 	return &domain.AuthInfo{
 		UserID:    claims.UserID,
@@ -356,17 +351,19 @@ func (s *authenticationService) RefreshAccessToken(ctx context.Context, refreshT
 	if err != nil {
 		return nil, err
 	}
-	session, err := s.sessionRepo.GetByRefreshToken(context.Background(), refreshToken)
+
+	session, err := s.sessionRepo.GetByID(ctx, claims.SessionID)
 	if err != nil || session == nil {
 		return nil, fmt.Errorf("invalid refresh token")
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(session.RefreshToken), []byte(refreshToken)); err != nil {
-		s.sessionRepo.Delete(ctx, session.ID)
+		_ = s.sessionRepo.Delete(ctx, session.ID)
+		return nil, fmt.Errorf("invalid refresh token")
 	}
 
 	if time.Now().After(session.ExpiresAt) {
-		s.sessionRepo.Delete(context.Background(), session.ID)
+		_ = s.sessionRepo.Delete(context.Background(), session.ID)
 		return nil, fmt.Errorf("refresh token expired")
 	}
 
@@ -384,7 +381,7 @@ func (s *authenticationService) RefreshAccessToken(ctx context.Context, refreshT
 	}
 
 	session.LastUsedAt = time.Now()
-	if err := s.sessionRepo.Update(context.Background(), session); err != nil {
+	if err := s.sessionRepo.Update(ctx, session); err != nil {
 		return nil, err
 	}
 
@@ -464,6 +461,11 @@ func (s *authenticationService) enforceSessionLimit(ctx context.Context, userID 
 	})
 
 	excess := len(sessions) - maxActiveSessions - 1
+
+	if excess <= 0 {
+		return nil
+	}
+
 	errs := make(chan error, excess)
 	var wg sync.WaitGroup
 
