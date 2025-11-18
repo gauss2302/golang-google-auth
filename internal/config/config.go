@@ -27,6 +27,7 @@ type Config struct {
 
 	// Security Settings
 	CSRFKey            []byte
+	CSRFTokenTTL       time.Duration
 	RateLimitPerMinute int
 	RateLimitInterval  time.Duration
 	CookieSecure       bool
@@ -54,6 +55,7 @@ func Load() *Config {
 		RateLimitPerMinute: getRequiredEnvAsInt("RATE_LIMIT_PER_MINUTE"),
 		RateLimitInterval:  time.Duration(getRequiredEnvAsInt("RATE_LIMIT_INTERVAL_SECONDS")) * time.Second,
 		CookieSecure:       getRequiredEnvAsBool("COOKIE_SECURE"),
+		CSRFTokenTTL:       time.Duration(getEnvAsIntWithDefault("CSRF_TOKEN_TTL_SECONDS", 86400)) * time.Second,
 	}
 
 	// Handle CSRF key
@@ -96,6 +98,20 @@ func getRequiredEnvAsBool(key string) bool {
 		log.Fatalf("Environment variable %s must be a valid boolean, got: %s", key, value)
 	}
 	return boolValue
+}
+
+func getEnvAsIntWithDefault(key string, defaultValue int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+
+	intValue, err := strconv.Atoi(value)
+	if err != nil {
+		log.Fatalf("Environment variable %s must be a valid integer, got: %s", key, value)
+	}
+
+	return intValue
 }
 
 func generateRandomKey(length int) []byte {
