@@ -4,8 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/go-playground/validator/v10"
+	"time"
 )
 
 type Education struct {
@@ -14,13 +13,25 @@ type Education struct {
 	Degree      string `json:"degree" validate:"required,max=200"`
 	Field       string `json:"field" validate:"omitempty,max=200"`
 	StartDate   string `json:"start_date" validate:"required,datetime=2006-01-02"` // Format: YYYY-MM-DD
-	EndDate     string `json:"end_date" validate:"omitempty,present_or_date"`      // Format: YYYY-MM-DD or "Present"
+	EndDate     string `json:"end_date" validate:"omitempty,date_or_present"`      // Format: YYYY-MM-DD or "Present"
 	Description string `json:"description" validate:"omitempty,max=1000"`
 	GPA         string `json:"gpa,omitempty" validate:"omitempty,numeric"`
 }
 
 func (e *Education) Validate() error {
-	return formatValidationErrors("education", domainValidator.Struct(e))
+	if err := ValidateStruct(e); err != nil {
+		return err
+	}
+
+	if e.EndDate != "" && e.EndDate != "Present" {
+		start, startErr := time.Parse("2006-01-02", e.StartDate)
+		end, endErr := time.Parse("2006-01-02", e.EndDate)
+		if startErr == nil && endErr == nil && end.Before(start) {
+			return ValidationErrors{NewValidationError("end_date", "end_date must be after start_date", ErrDateRange)}
+		}
+	}
+
+	return nil
 }
 
 func (e *Education) BeforeSave() {
