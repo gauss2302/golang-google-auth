@@ -50,7 +50,7 @@ func (s *skillService) CreateSkill(ctx context.Context, userID uuid.UUID, req *d
 	skill.BeforeSave()
 
 	if err := skill.Validate(); err != nil {
-		return nil, fmt.Errorf("skill validation failed: %w", err)
+		return nil, err
 	}
 
 	existingSkills, err := s.skillRepo.GetByUserID(ctx, userID)
@@ -86,11 +86,12 @@ func (s *skillService) GetUserSkills(ctx context.Context, userID uuid.UUID) ([]*
 }
 
 func (s *skillService) GetUserSkillsByCategory(ctx context.Context, userID uuid.UUID, category string) ([]*domain.Skill, error) {
-	if !domain.IsValidSkillCategory(category) {
-		return nil, domain.NewValidationError("category",
-			fmt.Sprintf("Invalid category, must be one of: %s",
-				strings.Join(domain.GetSkillCategoryKeys(), ", ")),
-			domain.ErrInvalidField)
+	filter := struct {
+		Category string `validate:"required,oneof=language framework tool database other"`
+	}{Category: category}
+
+	if err := domain.ValidateStruct(filter); err != nil {
+		return nil, err
 	}
 
 	skills, err := s.skillRepo.GetByUserIDAndCategory(ctx, userID, category)
@@ -138,7 +139,7 @@ func (s *skillService) UpdateSkill(ctx context.Context, skillID uuid.UUID, userI
 	// Подготавливаем и валидируем
 	skill.BeforeSave()
 	if err := skill.Validate(); err != nil {
-		return nil, fmt.Errorf("skill validation failed: %w", err)
+		return nil, err
 	}
 
 	// Проверяем конфликты имен, если имя изменилось

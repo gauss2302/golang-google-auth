@@ -3,83 +3,34 @@ package domain
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type Education struct {
-	Institution string `json:"institution"`
-	Location    string `json:"location"`
-	Degree      string `json:"degree"`
-	Field       string `json:"field"`
-	StartDate   string `json:"start_date"` // Format: YYYY-MM-DD
-	EndDate     string `json:"end_date"`   // Format: YYYY-MM-DD or "Present"
-	Description string `json:"description"`
-	GPA         string `json:"gpa,omitempty"`
+	Institution string `json:"institution" validate:"required,max=200"`
+	Location    string `json:"location" validate:"omitempty,max=200"`
+	Degree      string `json:"degree" validate:"required,max=200"`
+	Field       string `json:"field" validate:"omitempty,max=200"`
+	StartDate   string `json:"start_date" validate:"required,datetime=2006-01-02"` // Format: YYYY-MM-DD
+	EndDate     string `json:"end_date" validate:"omitempty,date_or_present"`      // Format: YYYY-MM-DD or "Present"
+	Description string `json:"description" validate:"omitempty,max=1000"`
+	GPA         string `json:"gpa,omitempty" validate:"omitempty,numeric"`
 }
 
 func (e *Education) Validate() error {
-	vb := NewValidationBuilder[*Education]()
-
-	// Required fields with security sanitization
-	vb.Field("institution", e.Institution).
-		Required().
-		String().
-		NotEmpty().
-		MaxLength(200).
-		SecureSanitize()
-
-	vb.Field("degree", e.Degree).
-		Required().
-		String().
-		NotEmpty().
-		MaxLength(200).
-		SecureSanitize()
-
-	vb.Field("start_date", e.StartDate).
-		Required().
-		Date().
-		ISO8601()
-
-	// Optional fields validation
-	if e.Location != "" {
-		vb.Field("location", e.Location).
-			String().
-			MaxLength(200).
-			SecureSanitize()
+	if err := ValidateStruct(e); err != nil {
+		return err
 	}
 
-	if e.Field != "" {
-		vb.Field("field", e.Field).
-			String().
-			MaxLength(200).
-			SecureSanitize()
-	}
-
-	// End date validation with special handling for "Present"
-	if e.EndDate != "" {
-		if e.EndDate == "Present" {
-			// "Present" is valid, no further validation needed
-		} else {
-			vb.Field("end_date", e.EndDate).
-				Date().
-				ISO8601().
-				After(e.StartDate)
+	if e.EndDate != "" && e.EndDate != "Present" {
+		start, startErr := time.Parse("2006-01-02", e.StartDate)
+		end, endErr := time.Parse("2006-01-02", e.EndDate)
+		if startErr == nil && endErr == nil && end.Before(start) {
+			return ValidationErrors{NewValidationError("end_date", "end_date must be after start_date", ErrDateRange)}
 		}
 	}
 
-	if e.Description != "" {
-		vb.Field("description", e.Description).
-			String().
-			MaxLength(1000).
-			SecureSanitize()
-	}
-
-	if e.GPA != "" {
-		vb.Field("gpa", e.GPA).
-			String().
-			Pattern(`^\d+\.?\d*$`, "GPA must be a valid number (e.g., 3.5, 4.0)")
-	}
-
-	return vb.Build()
+	return nil
 }
 
 func (e *Education) BeforeSave() {

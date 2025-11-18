@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"googleAuth/internal/config"
 	"googleAuth/internal/domain"
+	"googleAuth/internal/service"
 	"net/http"
 	"time"
 
@@ -12,14 +13,20 @@ import (
 )
 
 type AuthHandler struct {
-	authService domain.AuthenticationService
-	config      *config.Config
+	authService   domain.AuthenticationService
+	config        *config.Config
+	refreshCookie *service.CookieConfig
 }
 
 func NewAuthHandler(authService domain.AuthenticationService, cfg *config.Config) *AuthHandler {
 	return &AuthHandler{
 		authService: authService,
 		config:      cfg,
+		refreshCookie: func() *service.CookieConfig {
+			cookieCfg := service.DefaultCookieConfig()
+			cookieCfg.Secure = cfg.CookieSecure
+			return cookieCfg
+		}(),
 	}
 }
 
@@ -143,33 +150,45 @@ func (h *AuthHandler) ExchangeAuthCode(c *gin.Context) {
 		return
 	}
 
+	if authResult.Tokens == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Token generation failed"})
+		return
+	}
+
+	h.setRefreshTokenCookie(c, authResult.Tokens.RefreshToken)
+
 	c.JSON(http.StatusOK, gin.H{
-		"user":   authResult.User,
-		"tokens": authResult.Tokens,
+		"user": authResult.User,
+		"tokens": gin.H{
+			"access_token": authResult.Tokens.AccessToken,
+			"session_id":   authResult.Tokens.SessionID,
+		},
 	})
 }
 
 func (h *AuthHandler) RefreshToken(c *gin.Context) {
-	var req struct {
-		RefreshToken string `json:"refresh_token" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
 	userAgent := c.GetHeader("User-Agent")
 	ipAddress := c.ClientIP()
 
+	refreshToken, err := c.Cookie(h.refreshCookie.Name)
+	if err != nil || refreshToken == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Refresh token missing"})
+		return
+	}
+
 	// Используем новый сервис для обновления токенов
-	tokenPair, err := h.authService.RefreshAccessToken(c.Request.Context(), req.RefreshToken, userAgent, ipAddress)
+	tokenPair, err := h.authService.RefreshAccessToken(c.Request.Context(), refreshToken, userAgent, ipAddress)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"tokens": tokenPair})
+	h.setRefreshTokenCookie(c, tokenPair.RefreshToken)
+
+	c.JSON(http.StatusOK, gin.H{"tokens": gin.H{
+		"access_token": tokenPair.AccessToken,
+		"session_id":   tokenPair.SessionID,
+	}})
 }
 
 func (h *AuthHandler) Logout(c *gin.Context) {
@@ -183,6 +202,8 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke session"})
 		return
 	}
+
+	h.clearRefreshTokenCookie(c)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
 }
@@ -259,5 +280,37 @@ func (h *AuthHandler) RevokeAllSessions(c *gin.Context) {
 		return
 	}
 
+	h.clearRefreshTokenCookie(c)
+
 	c.JSON(http.StatusOK, gin.H{"message": "All sessions revoked successfully"})
+}
+
+func (h *AuthHandler) setRefreshTokenCookie(c *gin.Context, refreshToken string) {
+	cookie := &http.Cookie{
+		Name:     h.refreshCookie.Name,
+		Value:    refreshToken,
+		Path:     h.refreshCookie.Path,
+		Domain:   h.refreshCookie.Domain,
+		MaxAge:   int(service.RefreshTokenDuration.Seconds()),
+		HttpOnly: h.refreshCookie.HttpOnly,
+		Secure:   h.refreshCookie.Secure,
+		SameSite: h.refreshCookie.SameSite,
+	}
+
+	http.SetCookie(c.Writer, cookie)
+}
+
+func (h *AuthHandler) clearRefreshTokenCookie(c *gin.Context) {
+	cookie := &http.Cookie{
+		Name:     h.refreshCookie.Name,
+		Value:    "",
+		Path:     h.refreshCookie.Path,
+		Domain:   h.refreshCookie.Domain,
+		MaxAge:   -1,
+		HttpOnly: h.refreshCookie.HttpOnly,
+		Secure:   h.refreshCookie.Secure,
+		SameSite: h.refreshCookie.SameSite,
+	}
+
+	http.SetCookie(c.Writer, cookie)
 }
