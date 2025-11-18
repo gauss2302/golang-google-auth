@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ const (
 var (
 	ErrInvalidCSRFToken = errors.New("invalid CSRF token")
 	ErrMissingCSRFToken = errors.New("missing CSRF token")
+	ErrExpiredCSRFToken = errors.New("expired CSRF token")
 )
 
 type CSRFConfig struct {
@@ -34,6 +36,7 @@ type CSRFConfig struct {
 	CookieDomain   string
 	CookieMaxAge   int
 	CookieSameSite http.SameSite
+	TokenTTL       time.Duration
 }
 
 type CSRFProtection struct {
@@ -54,6 +57,9 @@ func NewCSRFProtection(config CSRFConfig) *CSRFProtection {
 	if config.CookieSameSite == 0 {
 		config.CookieSameSite = http.SameSiteStrictMode
 	}
+	if config.TokenTTL == 0 {
+		config.TokenTTL = 24 * time.Hour
+	}
 
 	return &CSRFProtection{
 		config: config,
@@ -72,31 +78,15 @@ func (c *CSRFProtection) GinMiddleware() gin.HandlerFunc {
 			r.Method == http.MethodOptions ||
 			r.Method == http.MethodTrace {
 
-			cookie, err := r.Cookie(CSRFCookieName)
-			if err != nil || cookie.Value == "" {
-				token, err := c.generateToken()
-				if err != nil {
-					ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate CSRF token"})
-					ctx.Abort()
-					return
-				}
-
-				http.SetCookie(w, &http.Cookie{
-					Name:     CSRFCookieName,
-					Value:    token,
-					Path:     c.config.CookiePath,
-					Domain:   c.config.CookieDomain,
-					MaxAge:   c.config.CookieMaxAge,
-					Secure:   c.config.CookieSecure,
-					HttpOnly: true,
-					SameSite: c.config.CookieSameSite,
-				})
-
-				// Make token available to the handler
-				ctx.Set("csrf_token", token)
-			} else {
-				ctx.Set("csrf_token", cookie.Value)
+			token, err := c.generateToken()
+			if err != nil {
+				ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate CSRF token"})
+				ctx.Abort()
+				return
 			}
+
+			c.setCookie(w, token)
+			ctx.Set("csrf_token", token)
 
 			ctx.Next()
 			return
@@ -124,12 +114,24 @@ func (c *CSRFProtection) GinMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		if token != cookie.Value {
+			log.Error().Msg("CSRF token does not match cookie")
+			ctx.JSON(http.StatusForbidden, gin.H{"error": "Invalid CSRF token"})
+			ctx.Abort()
+			return
+		}
+
 		// Validation
 		if err := c.validateToken(token); err != nil {
 			log.Error().Err(err).Msg("CSRF token validation failed")
 			ctx.JSON(http.StatusForbidden, gin.H{"error": "Invalid CSRF token"})
 			ctx.Abort()
 			return
+		}
+
+		newToken, err := c.generateToken()
+		if err == nil {
+			c.setCookie(w, newToken)
 		}
 
 		ctx.Next()
@@ -143,26 +145,13 @@ func (c *CSRFProtection) Middleware(next http.Handler) http.Handler {
 			r.Method == http.MethodHead ||
 			r.Method == http.MethodOptions ||
 			r.Method == http.MethodTrace {
-
-			cookie, err := r.Cookie(CSRFCookieName)
-			if err != nil || cookie.Value == "" {
-				token, err := c.generateToken()
-				if err != nil {
-					http.Error(w, "Failed to generate CSRF token", http.StatusInternalServerError)
-					return
-				}
-
-				http.SetCookie(w, &http.Cookie{
-					Name:     CSRFCookieName,
-					Value:    token,
-					Path:     c.config.CookiePath,
-					Domain:   c.config.CookieDomain,
-					MaxAge:   c.config.CookieMaxAge,
-					Secure:   c.config.CookieSecure,
-					HttpOnly: true,
-					SameSite: c.config.CookieSameSite,
-				})
+			token, err := c.generateToken()
+			if err != nil {
+				http.Error(w, "Failed to generate CSRF token", http.StatusInternalServerError)
+				return
 			}
+
+			c.setCookie(w, token)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -187,11 +176,21 @@ func (c *CSRFProtection) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
+		if token != cookie.Value {
+			log.Error().Msg("CSRF token does not match cookie")
+			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
+			return
+		}
+
 		// Validation
 		if err := c.validateToken(token); err != nil {
 			log.Error().Err(err).Msg("CSRF token validation failed")
 			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
 			return
+		}
+
+		if newToken, err := c.generateToken(); err == nil {
+			c.setCookie(w, newToken)
 		}
 
 		next.ServeHTTP(w, r)
@@ -235,6 +234,10 @@ func (c *CSRFProtection) validateToken(token string) error {
 	// Extraction
 	randomStr, timeStampStr, receivedSign := parts[0], parts[1], parts[2]
 	payload := fmt.Sprintf("%s|%s", randomStr, timeStampStr)
+	timeStamp, err := strconv.ParseInt(timeStampStr, 10, 64)
+	if err != nil {
+		return ErrInvalidCSRFToken
+	}
 
 	// Sign payload with HMAC 256
 	h := hmac.New(sha256.New, c.config.Key)
@@ -245,7 +248,27 @@ func (c *CSRFProtection) validateToken(token string) error {
 	if !hmac.Equal([]byte(receivedSign), []byte(expectedSign)) {
 		return ErrInvalidCSRFToken
 	}
+
+	if c.config.TokenTTL > 0 {
+		tokenTime := time.Unix(timeStamp, 0)
+		if time.Since(tokenTime) > c.config.TokenTTL {
+			return ErrExpiredCSRFToken
+		}
+	}
 	return nil
+}
+
+func (c *CSRFProtection) setCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CSRFCookieName,
+		Value:    token,
+		Path:     c.config.CookiePath,
+		Domain:   c.config.CookieDomain,
+		MaxAge:   c.config.CookieMaxAge,
+		Secure:   c.config.CookieSecure,
+		HttpOnly: true,
+		SameSite: c.config.CookieSameSite,
+	})
 }
 
 // GetToken returns the CSRF token from the context (Gin)
