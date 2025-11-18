@@ -3,11 +3,13 @@ package domain
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/go-playground/validator/v10"
 	"github.com/microcosm-cc/bluemonday"
 	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -487,6 +489,68 @@ func (vs *ValidationService[T]) ValidateCollection(models []T) error {
 		return errors
 	}
 	return nil
+}
+
+var (
+	validatorOnce sync.Once
+	validatorInst *validator.Validate
+)
+
+// getValidator lazily initializes and returns a shared validator instance with custom rules.
+func getValidator() *validator.Validate {
+	validatorOnce.Do(func() {
+		validatorInst = validator.New()
+		// Allow "Present" end dates while still validating real dates.
+		_ = validatorInst.RegisterValidation("date_or_present", func(fl validator.FieldLevel) bool {
+			value := fl.Field().String()
+			if value == "" || value == "Present" {
+				return true
+			}
+			_, err := time.Parse("2006-01-02", value)
+			return err == nil
+		})
+	})
+	return validatorInst
+}
+
+// ValidateStruct validates a struct using go-playground/validator and maps errors into the
+// project's ValidationErrors format for consistent error handling.
+func ValidateStruct(model interface{}) error {
+	if err := getValidator().Struct(model); err != nil {
+		if validationErrors, ok := err.(validator.ValidationErrors); ok {
+			mapped := make(ValidationErrors, 0, len(validationErrors))
+			for _, fieldErr := range validationErrors {
+				mapped = append(mapped, ValidationError{
+					Field:   fieldErr.Field(),
+					Message: formatValidationMessage(fieldErr),
+					Type:    ErrInvalidField,
+					Value:   fieldErr.Value(),
+				})
+			}
+			return mapped
+		}
+		return err
+	}
+	return nil
+}
+
+func formatValidationMessage(err validator.FieldError) string {
+	switch err.Tag() {
+	case "required":
+		return "field is required"
+	case "max":
+		return fmt.Sprintf("must not exceed %s", err.Param())
+	case "min":
+		return fmt.Sprintf("must be at least %s", err.Param())
+	case "oneof":
+		return fmt.Sprintf("must be one of: %s", err.Param())
+	case "datetime":
+		return fmt.Sprintf("must match datetime format %s", err.Param())
+	case "date_or_present":
+		return "must be a valid date (YYYY-MM-DD) or 'Present'"
+	default:
+		return err.Error()
+	}
 }
 
 // JSON utilities
