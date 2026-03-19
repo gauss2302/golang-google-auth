@@ -73,11 +73,11 @@ func (r *sessionRepository) GetByID(ctx context.Context, sessionID string) (*dom
 
 	data, err := r.client.Get(ctx, sessionKey).Result()
 	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
-	//if err != nil {
-	//	return nil, err
-	//}
 
 	var session domain.Session
 	if err := json.Unmarshal([]byte(data), &session); err != nil {

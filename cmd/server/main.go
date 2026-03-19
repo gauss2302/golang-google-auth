@@ -40,11 +40,19 @@ func main() {
 	}
 	defer redisClient.Close()
 
-	// Инициализируем компоненты безопасности
+	// General rate limiter for all routes
 	rateLimiter := security.NewRateLimiter(security.RateLimiterConfig{
 		Redis:              redisClient,
 		Limit:              cfg.RateLimitPerMinute,
 		Interval:           cfg.RateLimitInterval,
+		SkipSuccessfulAuth: false,
+	})
+
+	// Stricter rate limiter for auth endpoints (5 requests per minute)
+	authRateLimiter := security.NewRateLimiter(security.RateLimiterConfig{
+		Redis:              redisClient,
+		Limit:              5,
+		Interval:           time.Minute,
 		SkipSuccessfulAuth: false,
 	})
 
@@ -58,23 +66,23 @@ func main() {
 		TokenTTL:       cfg.CSRFTokenTTL,
 	})
 
-	// Инициализируем репозитории
 	userRepo := repository.NewUserRepository(db)
 	sessionRepo := repository.NewSessionRepository(redisClient)
 	skillRepo := repository.NewSkillRepository(db)
+	experienceRepo := repository.NewPostgresExpRepository(db)
 
-	// Инициализируем сервисы
 	oauthService := service.NewOAuthService(cfg)
 	twitterOAuthService := service.NewTwitterOAuthService(cfg)
 	authService := service.NewAuthenticationService(cfg, oauthService, twitterOAuthService, userRepo, sessionRepo)
 	skillService := service.NewSkillService(skillRepo)
+	experienceService := service.NewExperienceService(experienceRepo)
 
-	// Инициализируем handlers
 	authHandler := handler.NewAuthHandler(authService, cfg)
 	userHandler := handler.NewUserHandler(userRepo)
 	skillHandler := handler.NewSkillHandler(skillService)
+	experienceHandler := handler.NewExperienceHandler(experienceService)
 
-	router := setupRouter(cfg, authHandler, userHandler, skillHandler, rateLimiter, csrfProtection)
+	router := setupRouter(cfg, authHandler, userHandler, skillHandler, experienceHandler, rateLimiter, authRateLimiter, csrfProtection)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
@@ -112,7 +120,9 @@ func setupRouter(
 	authHandler *handler.AuthHandler,
 	userHandler *handler.UserHandler,
 	skillHandler *handler.SkillHandler,
+	experienceHandler *handler.ExperienceHandler,
 	rateLimiter *security.RateLimiter,
+	authRateLimiter *security.RateLimiter,
 	csrfProtection *security.CSRFProtection,
 ) *gin.Engine {
 	if cfg.Environment == "production" {
@@ -147,24 +157,34 @@ func setupRouter(
 		})
 
 		// ========== AUTHENTICATION ROUTES ==========
+		// Apply stricter rate limiting to all auth endpoints
 		auth := api.Group("/auth")
+		auth.Use(authRateLimiter.GinMiddleware())
 		{
-			// OAuth endpoints
+			// OAuth endpoints (no CSRF for initial redirect, but protected by rate limiter)
 			auth.GET("/google", authHandler.GoogleAuth)
-			auth.GET("/google/callback", csrfProtection.GinMiddleware(), authHandler.GoogleCallback)
+			auth.GET("/google/callback", authHandler.GoogleCallback)
 			auth.GET("/twitter", authHandler.TwitterAuth)
-			auth.GET("/twitter/callback", csrfProtection.GinMiddleware(), authHandler.TwitterCallback)
+			auth.GET("/twitter/callback", authHandler.TwitterCallback)
 
 			// Token management
+			// Refresh token doesn't need auth middleware (uses cookie)
+			// but needs CSRF protection for security
 			auth.POST("/refresh", csrfProtection.GinMiddleware(), authHandler.RefreshToken)
-			auth.POST("/logout", csrfProtection.GinMiddleware(),
-				middleware.AuthMiddleware(cfg.JWTSecret),
-				authHandler.Logout)
+			
+			// Exchange auth code for tokens (after OAuth callback)
 			auth.POST("/exchange-code", csrfProtection.GinMiddleware(), authHandler.ExchangeAuthCode)
+			
+			// Mobile auth (no cookies, tokens in response, but protected by rate limiter)
 			auth.POST("/mobile/login", authHandler.MobileLogin)
 			auth.POST("/mobile/register", authHandler.MobileRegister)
 
-			// Session management
+			// Logout requires authentication and CSRF protection
+			auth.POST("/logout", csrfProtection.GinMiddleware(),
+				middleware.AuthMiddleware(cfg.JWTSecret),
+				authHandler.Logout)
+
+			// Session management (requires authentication)
 			auth.GET("/sessions",
 				middleware.AuthMiddleware(cfg.JWTSecret),
 				authHandler.GetSessions)
@@ -174,34 +194,41 @@ func setupRouter(
 			auth.DELETE("/sessions", csrfProtection.GinMiddleware(),
 				middleware.AuthMiddleware(cfg.JWTSecret),
 				authHandler.RevokeAllSessions)
+			
+			// Check auth status (silent refresh check)
+			auth.GET("/status", middleware.OptionalAuthMiddleware(cfg.JWTSecret), 
+				authHandler.CheckAuthStatus)
 		}
 
 		// ========== PROTECTED ROUTES ==========
 		protected := api.Group("/")
 		protected.Use(middleware.AuthMiddleware(cfg.JWTSecret))
 		{
-			// Profile endpoints
 			protected.GET("/profile", userHandler.GetProfile)
 			protected.PUT("/profile", csrfProtection.GinMiddleware(), userHandler.UpdateProfile)
 
-			// Skills endpoints
 			skills := protected.Group("/skills")
 			{
-				// READ операции
 				skills.GET("/categories", skillHandler.GetSkillCategories)
 				skills.GET("", skillHandler.GetUserSkills)
 				skills.GET("/:id", skillHandler.GetSkill)
-
-				// WRITE операции
 				skills.POST("", csrfProtection.GinMiddleware(), skillHandler.CreateSkill)
 				skills.POST("/batch", csrfProtection.GinMiddleware(), skillHandler.CreateSkillsBatch)
 				skills.PUT("/:id", csrfProtection.GinMiddleware(), skillHandler.UpdateSkill)
 				skills.DELETE("/:id", csrfProtection.GinMiddleware(), skillHandler.DeleteSkill)
 				skills.DELETE("", csrfProtection.GinMiddleware(), skillHandler.DeleteAllUserSkills)
 			}
+
+			experiences := protected.Group("/experiences")
+			{
+				experiences.GET("/resume/:resumeId", experienceHandler.GetExperiencesByResume)
+				experiences.GET("/:id", experienceHandler.GetExperience)
+				experiences.POST("", csrfProtection.GinMiddleware(), experienceHandler.AddExperience)
+				experiences.PUT("/:id", csrfProtection.GinMiddleware(), experienceHandler.UpdateExperience)
+				experiences.DELETE("/:id", csrfProtection.GinMiddleware(), experienceHandler.DeleteExperience)
+			}
 		}
 
-		// Public routes
 		public := api.Group("/public")
 		{
 			public.GET("/skill-categories", skillHandler.GetSkillCategories)

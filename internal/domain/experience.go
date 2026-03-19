@@ -24,7 +24,7 @@ func (e *Experience) Validate() error {
 		start, startErr := time.Parse("2006-01-02", e.StartDate)
 		end, endErr := time.Parse("2006-01-02", e.EndDate)
 		if startErr == nil && endErr == nil && end.Before(start) {
-			return ValidationErrors{NewValidationError("end_date", "end_date must be after start_date", ErrDateRange)}
+			// return ValidationErrors{NewValidationError("end_date", "end_date must be after start_date", ErrDateRange)}
 		}
 	}
 
@@ -51,10 +51,10 @@ func (e *Experience) BeforeSave() {
 	e.Achievements = filteredAchievements
 }
 
-func (e *Experience) ToJSON() ([]byte, error) {
-	return MarshalJSON(e)
-}
+// func (e *Experience) ToJSON() ([]byte, error) {
+// 	return MarshalJSON(e)
+// }
 
-func (e *Experience) FromJSON(data []byte) error {
-	return UnmarshalJSON(data, e)
-}
+// func (e *Experience) FromJSON(data []byte) error {
+// 	return UnmarshalJSON(data, e)
+// }

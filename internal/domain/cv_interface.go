@@ -6,10 +6,20 @@ import (
 )
 
 type EducationRepository interface {
-	AddEducation(ctx context.Context, resumeId uuid.UUID, education *Education) (uuid.UUID, error)
+	// CRUD operations
+	AddEducation(ctx context.Context, resumeID uuid.UUID, education *Education) (uuid.UUID, error)
 	UpdateEducation(ctx context.Context, id uuid.UUID, education *Education) error
 	DeleteEducation(ctx context.Context, id uuid.UUID) error
 	GetEducation(ctx context.Context, id uuid.UUID) (*Education, error)
+
+	// Bulk operations
+	GetEducationsByResumeID(ctx context.Context, resumeID uuid.UUID) ([]*Education, error)
+	DeleteEducationsByResumeID(ctx context.Context, resumeID uuid.UUID) error
+	AddEducationsBatch(ctx context.Context, resumeID uuid.UUID, educations []*Education) ([]uuid.UUID, error)
+
+	// Utility operations
+	CountByResumeID(ctx context.Context, resumeID uuid.UUID) (int, error)
+	ExistsForResume(ctx context.Context, educationID, resumeID uuid.UUID) (bool, error)
 }
 
 type ExperienceRepository interface {

@@ -491,7 +491,6 @@ func (s *authenticationService) enforceSessionLimit(ctx context.Context, userID 
 	if len(sessions) < maxActiveSessions {
 		return nil
 	}
-	fmt.Print("ff")
 
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].LastUsedAt.Before(sessions[j].LastUsedAt)

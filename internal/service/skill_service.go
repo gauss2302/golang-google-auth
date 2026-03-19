@@ -3,10 +3,11 @@ package service
 import (
 	"context"
 	"fmt"
-	"github.com/google/uuid"
 	"googleAuth/internal/domain"
 	"googleAuth/internal/domain/dto"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 type SkillService interface {
@@ -60,9 +61,7 @@ func (s *skillService) CreateSkill(ctx context.Context, userID uuid.UUID, req *d
 
 	for _, existing := range existingSkills {
 		if strings.EqualFold(existing.Name, skill.Name) {
-			return nil, domain.NewValidationError("name",
-				"You already have this skill. Consider updating the existing one instead.",
-				domain.ErrInvalidField)
+			return nil, err
 		}
 	}
 
@@ -154,9 +153,7 @@ func (s *skillService) UpdateSkill(ctx context.Context, skillID uuid.UUID, userI
 				continue // Пропускаем текущий навык
 			}
 			if strings.EqualFold(existing.Name, skill.Name) {
-				return nil, domain.NewValidationError("name",
-					"You already have a skill with this name.",
-					domain.ErrInvalidField)
+				return nil, err
 			}
 		}
 	}

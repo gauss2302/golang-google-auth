@@ -17,66 +17,112 @@ import (
 func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
-		switch {
-		case authHeader == "":
+		if authHeader == "" {
 			abortJSON(c, http.StatusUnauthorized, "Authorization header required", "MISSING_AUTH_HEADER")
 			return
-		default:
-			const bearerPrefix = "Bearer "
-			tokenString, ok := strings.CutPrefix(authHeader, bearerPrefix)
-			if !ok {
-				abortJSON(c, http.StatusUnauthorized, "Bearer token required", "INVALID_AUTH_FORMAT")
-				return
-			}
-			tokenString = strings.TrimSpace(tokenString)
-			if tokenString == "" {
-				abortJSON(c, http.StatusUnauthorized, "Token cannot be empty", "EMPTY_TOKEN")
-				return
-			}
-
-			// Парсим и валидируем JWT токен
-			token, err := jwt.ParseWithClaims(tokenString, &service.Claims{}, func(token *jwt.Token) (interface{}, error) {
-				if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-				} else if method != jwt.SigningMethodHS256 {
-					return nil, fmt.Errorf("unexpected HMAC algorithm: %v", method.Alg())
-				}
-				return []byte(jwtSecret), nil
-			})
-
-			if err != nil {
-			if errors.Is(err, jwt.ErrTokenExpired) {
-					abortJSON(c, http.StatusUnauthorized, "Token expired", "TOKEN_EXPIRED")
-					return
-				}
-				abortJSON(c, http.StatusUnauthorized, "Invalid token", "TOKEN_INVALID")
-				return
-			}
-
-			// Извлекаем claims и устанавливаем в контекст
-			claims, ok := token.Claims.(*service.Claims)
-			if !ok || !token.Valid {
-				abortJSON(c, http.StatusUnauthorized, "Invalid token claims", "INVALID_CLAIMS")
-				return
-			}
-
-			if err := validateTokenClaims(claims); err != nil {
-				abortJSON(c, http.StatusUnauthorized, "Token validation failed", "CLAIM_VALIDATION_FAILED")
-				return
-			}
-
-			c.Set("user_id", claims.UserID)
-			c.Set("session_id", claims.SessionID)
-			c.Set("token_type", claims.TokenType)
 		}
+
+		const bearerPrefix = "Bearer "
+		tokenString, ok := strings.CutPrefix(authHeader, bearerPrefix)
+		if !ok {
+			abortJSON(c, http.StatusUnauthorized, "Bearer token required", "INVALID_AUTH_FORMAT")
+			return
+		}
+
+		tokenString = strings.TrimSpace(tokenString)
+		if tokenString == "" {
+			abortJSON(c, http.StatusUnauthorized, "Token cannot be empty", "EMPTY_TOKEN")
+			return
+		}
+
+		claims, err := parseAndValidateToken(tokenString, jwtSecret)
+		if err != nil {
+			handleTokenError(c, err)
+			return
+		}
+
+		c.Set("user_id", claims.UserID)
+		c.Set("session_id", claims.SessionID)
+		c.Set("token_type", claims.TokenType)
+		c.Set("authenticated", true)
+
+		c.Next()
 	}
+}
+
+// OptionalAuthMiddleware tries to authenticate but doesn't fail if no token
+func OptionalAuthMiddleware(jwtSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set("authenticated", false)
+
+		authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
+		if authHeader == "" {
+			c.Next()
+			return
+		}
+
+		const bearerPrefix = "Bearer "
+		tokenString, ok := strings.CutPrefix(authHeader, bearerPrefix)
+		if !ok {
+			c.Next()
+			return
+		}
+
+		tokenString = strings.TrimSpace(tokenString)
+		if tokenString == "" {
+			c.Next()
+			return
+		}
+
+		claims, err := parseAndValidateToken(tokenString, jwtSecret)
+		if err != nil {
+			// For optional auth, we just continue without setting user
+			c.Next()
+			return
+		}
+
+		c.Set("user_id", claims.UserID)
+		c.Set("session_id", claims.SessionID)
+		c.Set("token_type", claims.TokenType)
+		c.Set("authenticated", true)
+
+		c.Next()
+	}
+}
+
+
+
+func parseAndValidateToken(tokenString, jwtSecret string) (*service.Claims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &service.Claims{}, func(token *jwt.Token) (interface{}, error) {
+		if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		} else if method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected HMAC algorithm: %v", method.Alg())
+		}
+		return []byte(jwtSecret), nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	claims, ok := token.Claims.(*service.Claims)
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("invalid token claims")
+	}
+
+	if err := validateTokenClaims(claims); err != nil {
+		return nil, err
+	}
+
+	return claims, nil
 }
 
 func validateTokenClaims(claims *service.Claims) error {
 	now := time.Now()
 
 	if claims.ExpiresAt != nil && now.After(claims.ExpiresAt.Time) {
-		return fmt.Errorf("token has expired")
+		return jwt.ErrTokenExpired
 	}
 
 	if claims.NotBefore != nil && now.Before(claims.NotBefore.Time) {
@@ -96,6 +142,14 @@ func validateTokenClaims(claims *service.Claims) error {
 	}
 
 	return nil
+}
+
+func handleTokenError(c *gin.Context, err error) {
+	if errors.Is(err, jwt.ErrTokenExpired) {
+		abortJSON(c, http.StatusUnauthorized, "Token expired", "TOKEN_EXPIRED")
+		return
+	}
+	abortJSON(c, http.StatusUnauthorized, "Invalid token", "TOKEN_INVALID")
 }
 
 func abortJSON(c *gin.Context, code int, message, errorCode string) {

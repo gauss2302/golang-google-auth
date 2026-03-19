@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/go-playground/validator/v10"
 )
 
 type Education struct {
@@ -27,7 +29,7 @@ func (e *Education) Validate() error {
 		start, startErr := time.Parse("2006-01-02", e.StartDate)
 		end, endErr := time.Parse("2006-01-02", e.EndDate)
 		if startErr == nil && endErr == nil && end.Before(start) {
-			return ValidationErrors{NewValidationError("end_date", "end_date must be after start_date", ErrDateRange)}
+			// return ValidationErrors{NewValidationError("end_date", "end_date must be after start_date", ErrDateRange)}
 		}
 	}
 
@@ -56,9 +58,9 @@ func (e *Education) ToJSON() ([]byte, error) {
 	return MarshalJSON(e)
 }
 
-func (e *Education) FromJSON(data []byte) error {
-	return UnmarshalJSON(data, e)
-}
+// func (e *Education) FromJSON(data []byte) error {
+// 	return UnmarshalJSON(data, e)
+// }
 
 // Additional helper methods for Education
 
@@ -235,20 +237,20 @@ func (ec *EducationCollection) RemoveNilEntries() {
 }
 
 // AddEducation safely adds an education entry to the collection
-func (ec *EducationCollection) AddEducation(education *Education) error {
-	if education == nil {
-		return fmt.Errorf("education: cannot add nil education")
-	}
+// func (ec *EducationCollection) AddEducation(education *Education) error {
+// 	if education == nil {
+// 		return fmt.Errorf("education: cannot add nil education")
+// 	}
 
-	// Validate before adding
-	education.BeforeSave()
-	if err := education.Validate(); err != nil {
-		return err
-	}
+// 	// Validate before adding
+// 	education.BeforeSave()
+// 	if err := education.Validate(); err != nil {
+// 		return err
+// 	}
 
-	*ec = append(*ec, education)
-	return nil
-}
+// 	*ec = append(*ec, education)
+// 	return nil
+// }
 
 // ToJSON converts the collection to JSON
 func (ec *EducationCollection) ToJSON() ([]byte, error) {
@@ -256,9 +258,9 @@ func (ec *EducationCollection) ToJSON() ([]byte, error) {
 }
 
 // FromJSON parses the collection from JSON
-func (ec *EducationCollection) FromJSON(data []byte) error {
-	return UnmarshalJSON(data, ec)
-}
+// func (ec *EducationCollection) FromJSON(data []byte) error {
+// 	return UnmarshalJSON(data, ec)
+// }
 
 // Helper function to create a new Education pointer
 func NewEducation() *Education {

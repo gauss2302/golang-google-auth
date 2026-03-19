@@ -1,11 +1,9 @@
 package domain
 
 import (
+	"encoding/json"
 	"fmt"
-	"github.com/go-playground/validator/v10"
-	"github.com/microcosm-cc/bluemonday"
 	"net/url"
-	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -15,65 +13,58 @@ import (
 	"github.com/microcosm-cc/bluemonday"
 )
 
-var domainValidator *validator.Validate
+type ValidationErrorType string
 
-func init() {
-	domainValidator = validator.New()
+const (
+	ErrRequired     ValidationErrorType = "required"
+	ErrInvalidField ValidationErrorType = "invalid_field"
+	ErrMaxLength    ValidationErrorType = "max_length"
+	ErrMinLength    ValidationErrorType = "min_length"
+	ErrDateRange    ValidationErrorType = "date_range"
+	ErrXSSDetected  ValidationErrorType = "xss_detected"
+)
 
-	domainValidator.RegisterValidation("present_or_date", validatePresentOrDate)
-	domainValidator.RegisterStructValidation(educationStructValidation, Education{})
-	domainValidator.RegisterStructValidation(experienceStructValidation, Experience{})
+type ValidationError struct {
+	Field   string              `json:"field"`
+	Message string              `json:"message"`
+	Type    ValidationErrorType `json:"type"`
+	Value   interface{}         `json:"value,omitempty"`
 }
 
-func validatePresentOrDate(fl validator.FieldLevel) bool {
-	value := fl.Field().String()
-	if value == "" {
-		return true
-	}
-	if value == "Present" {
-		return true
-	}
-
-	_, err := time.Parse("2006-01-02", value)
-	return err == nil
+func (e ValidationError) Error() string {
+	return fmt.Sprintf("%s: %s", e.Field, e.Message)
 }
 
-func educationStructValidation(sl validator.StructLevel) {
-	education := sl.Current().Interface().(Education)
-
-	if education.EndDate == "" || education.EndDate == "Present" {
-		return
+func NewValidationError(field, message string, errType ValidationErrorType, value ...interface{}) ValidationError {
+	var v interface{}
+	if len(value) > 0 {
+		v = value[0]
 	}
-
-	start, startErr := time.Parse("2006-01-02", education.StartDate)
-	end, endErr := time.Parse("2006-01-02", education.EndDate)
-
-	if startErr != nil || endErr != nil {
-		return
-	}
-
-	if end.Before(start) {
-		sl.ReportError(education.EndDate, "EndDate", "end_date", "after_start", "")
+	return ValidationError{
+		Field:   field,
+		Message: message,
+		Type:    errType,
+		Value:   v,
 	}
 }
 
-func experienceStructValidation(sl validator.StructLevel) {
-	experience := sl.Current().Interface().(Experience)
+type ValidationErrors []ValidationError
 
-	if experience.EndDate == "" || experience.EndDate == "Present" {
-		return
+func (ve ValidationErrors) Error() string {
+	if len(ve) == 0 {
+		return ""
 	}
-
-	start, startErr := time.Parse("2006-01-02", experience.StartDate)
-	end, endErr := time.Parse("2006-01-02", experience.EndDate)
-
-	if startErr != nil || endErr != nil {
-		return
+	parts := make([]string, len(ve))
+	for i, err := range ve {
+		parts[i] = err.Error()
 	}
+	return strings.Join(parts, "; ")
+}
 
-	if end.Before(start) {
-		sl.ReportError(experience.EndDate, "EndDate", "end_date", "after_start", "")
-	}
+// DomainModel is implemented by all domain entities that can be validated and sanitized.
+type DomainModel interface {
+	Validate() error
+	BeforeSave()
 }
 
 // SecuritySanitizer provides HTML sanitization helpers.
@@ -101,15 +92,203 @@ func (s *SecuritySanitizer) SanitizeStrings(inputs ...string) []string {
 	return result
 }
 
+var (
+	domainValidator *validator.Validate
+	validatorOnce   sync.Once
+	validatorInst   *validator.Validate
+)
+
+func init() {
+	domainValidator = validator.New()
+	domainValidator.RegisterValidation("present_or_date", validatePresentOrDate)
+	domainValidator.RegisterStructValidation(educationStructValidation, Education{})
+	domainValidator.RegisterStructValidation(experienceStructValidation, Experience{})
+}
+
+func validatePresentOrDate(fl validator.FieldLevel) bool {
+	value := fl.Field().String()
+	if value == "" || value == "Present" {
+		return true
+	}
+
+	_, err := time.Parse("2006-01-02", value)
+	return err == nil
+}
+
+func educationStructValidation(sl validator.StructLevel) {
+	education := sl.Current().Interface().(Education)
+
+	if education.EndDate == "" || education.EndDate == "Present" {
+		return
+	}
+
+	start, startErr := time.Parse("2006-01-02", education.StartDate)
+	end, endErr := time.Parse("2006-01-02", education.EndDate)
+	if startErr != nil || endErr != nil {
+		return
+	}
+
+	if end.Before(start) {
+		sl.ReportError(education.EndDate, "EndDate", "end_date", "after_start", "")
+	}
+}
+
+func experienceStructValidation(sl validator.StructLevel) {
+	experience := sl.Current().Interface().(Experience)
+
+	if experience.EndDate == "" || experience.EndDate == "Present" {
+		return
+	}
+
+	start, startErr := time.Parse("2006-01-02", experience.StartDate)
+	end, endErr := time.Parse("2006-01-02", experience.EndDate)
+	if startErr != nil || endErr != nil {
+		return
+	}
+
+	if end.Before(start) {
+		sl.ReportError(experience.EndDate, "EndDate", "end_date", "after_start", "")
+	}
+}
+
+// Utility to turn go-playground errors into project ValidationErrors with a prefix.
 func formatValidationErrors(prefix string, err error) error {
 	if err == nil {
 		return nil
 	}
 
 	if validationErrs, ok := err.(validator.ValidationErrors); ok {
-		return fmt.Errorf("%s: %w", prefix, validationErrs)
+		mapped := make(ValidationErrors, 0, len(validationErrs))
+		for _, fieldErr := range validationErrs {
+			field := fieldErr.Field()
+			if prefix != "" {
+				field = prefix + "." + field
+			}
+			mapped = append(mapped, ValidationError{
+				Field:   field,
+				Message: formatValidationMessage(fieldErr),
+				Type:    ErrInvalidField,
+				Value:   fieldErr.Value(),
+			})
+		}
+		return mapped
 	}
-	return sv
+
+	return err
+}
+
+// ValidationBuilder is a lightweight helper for manual validations.
+type ValidationBuilder[T any] struct {
+	errors    ValidationErrors
+	sanitizer *SecuritySanitizer
+}
+
+func NewValidationBuilder[T any]() *ValidationBuilder[T] {
+	return &ValidationBuilder[T]{
+		sanitizer: NewSecuritySanitizer(),
+	}
+}
+
+func (vb *ValidationBuilder[T]) Field(field string, value interface{}) *FieldValidator[T] {
+	return &FieldValidator[T]{builder: vb, field: field, value: value}
+}
+
+func (vb *ValidationBuilder[T]) addError(field, message string, errType ValidationErrorType, value interface{}) {
+	vb.errors = append(vb.errors, NewValidationError(field, message, errType, value))
+}
+
+func (vb *ValidationBuilder[T]) Build() error {
+	if len(vb.errors) == 0 {
+		return nil
+	}
+	return vb.errors
+}
+
+type FieldValidator[T any] struct {
+	builder *ValidationBuilder[T]
+	field   string
+	value   interface{}
+}
+
+func (fv *FieldValidator[T]) Required() *FieldValidator[T] {
+	if fv.isEmpty() {
+		fv.builder.addError(fv.field, "field is required", ErrRequired, fv.value)
+	}
+	return fv
+}
+
+func (fv *FieldValidator[T]) String() *StringValidator[T] {
+	str, _ := fv.value.(string)
+	return &StringValidator[T]{FieldValidator: fv, value: str}
+}
+
+func (fv *FieldValidator[T]) StringSlice() *StringSliceValidator[T] {
+	values, _ := fv.value.([]string)
+	return &StringSliceValidator[T]{FieldValidator: fv, value: values}
+}
+
+func (fv *FieldValidator[T]) Date() *DateValidator[T] {
+	value, _ := fv.value.(string)
+	return &DateValidator[T]{FieldValidator: fv, value: value}
+}
+
+func (fv *FieldValidator[T]) URL() *FieldValidator[T] {
+	if str, ok := fv.value.(string); ok && str != "" {
+		if _, err := url.ParseRequestURI(str); err != nil {
+			fv.builder.addError(fv.field, "invalid URL", ErrInvalidField, fv.value)
+		}
+	}
+	return fv
+}
+
+func (fv *FieldValidator[T]) Email() *FieldValidator[T] {
+	if email, ok := fv.value.(string); ok && email != "" {
+		re := regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
+		if !re.MatchString(email) {
+			fv.builder.addError(fv.field, "invalid email address", ErrInvalidField, fv.value)
+		}
+	}
+	return fv
+}
+
+func (fv *FieldValidator[T]) OneOf(values ...string) *FieldValidator[T] {
+	if val, ok := fv.value.(string); ok && val != "" {
+		for _, allowed := range values {
+			if val == allowed {
+				return fv
+			}
+		}
+		fv.builder.addError(fv.field, fmt.Sprintf("must be one of: %s", strings.Join(values, ", ")), ErrInvalidField, fv.value)
+	}
+	return fv
+}
+
+func (fv *FieldValidator[T]) SecureSanitize() *FieldValidator[T] {
+	if str, ok := fv.value.(string); ok && str != "" {
+		sanitized := fv.builder.sanitizer.SanitizeString(str)
+		if sanitized != str {
+			fv.builder.addError(fv.field, "content contains potentially unsafe HTML", ErrXSSDetected, fv.value)
+		}
+	}
+	return fv
+}
+
+func (fv *FieldValidator[T]) isEmpty() bool {
+	switch v := fv.value.(type) {
+	case string:
+		return strings.TrimSpace(v) == ""
+	case []string:
+		return len(v) == 0
+	case nil:
+		return true
+	default:
+		return false
+	}
+}
+
+type StringValidator[T any] struct {
+	*FieldValidator[T]
+	value string
 }
 
 func (sv *StringValidator[T]) MaxLength(max int) *StringValidator[T] {
@@ -121,7 +300,7 @@ func (sv *StringValidator[T]) MaxLength(max int) *StringValidator[T] {
 
 func (sv *StringValidator[T]) NotEmpty() *StringValidator[T] {
 	if strings.TrimSpace(sv.value) == "" {
-		sv.builder.addError(sv.field, sv.field+" cannot be empty", ErrRequired, sv.value)
+		sv.builder.addError(sv.field, "field cannot be empty", ErrRequired, sv.value)
 	}
 	return sv
 }
@@ -146,7 +325,6 @@ func (sv *StringValidator[T]) SecureSanitize() *StringValidator[T] {
 	return sv
 }
 
-// String slice validator
 type StringSliceValidator[T any] struct {
 	*FieldValidator[T]
 	value []string
@@ -169,8 +347,7 @@ func (ssv *StringSliceValidator[T]) MaxLength(max int) *StringSliceValidator[T] 
 func (ssv *StringSliceValidator[T]) EachMinLength(min int) *StringSliceValidator[T] {
 	for i, item := range ssv.value {
 		if len(strings.TrimSpace(item)) < min {
-			ssv.builder.addError(fmt.Sprintf("%s[%d]", ssv.field, i),
-				fmt.Sprintf("minimum length is %d characters", min), ErrMinLength, item)
+			ssv.builder.addError(fmt.Sprintf("%s[%d]", ssv.field, i), fmt.Sprintf("minimum length is %d characters", min), ErrMinLength, item)
 		}
 	}
 	return ssv
@@ -179,8 +356,7 @@ func (ssv *StringSliceValidator[T]) EachMinLength(min int) *StringSliceValidator
 func (ssv *StringSliceValidator[T]) EachMaxLength(max int) *StringSliceValidator[T] {
 	for i, item := range ssv.value {
 		if len(item) > max {
-			ssv.builder.addError(fmt.Sprintf("%s[%d]", ssv.field, i),
-				fmt.Sprintf("maximum length is %d characters", max), ErrMaxLength, item)
+			ssv.builder.addError(fmt.Sprintf("%s[%d]", ssv.field, i), fmt.Sprintf("maximum length is %d characters", max), ErrMaxLength, item)
 		}
 	}
 	return ssv
@@ -191,15 +367,13 @@ func (ssv *StringSliceValidator[T]) EachSecureSanitize() *StringSliceValidator[T
 		if item != "" {
 			sanitized := ssv.builder.sanitizer.SanitizeString(item)
 			if sanitized != item {
-				ssv.builder.addError(fmt.Sprintf("%s[%d]", ssv.field, i),
-					"content contains potentially unsafe HTML", ErrXSSDetected, item)
+				ssv.builder.addError(fmt.Sprintf("%s[%d]", ssv.field, i), "content contains potentially unsafe HTML", ErrXSSDetected, item)
 			}
 		}
 	}
 	return ssv
 }
 
-// Date validator with generics
 type DateValidator[T any] struct {
 	*FieldValidator[T]
 	value string
@@ -222,7 +396,6 @@ func (dv *DateValidator[T]) After(otherDateStr string) *DateValidator[T] {
 	if dv.value != "" && otherDateStr != "" {
 		date, err1 := time.Parse("2006-01-02", dv.value)
 		otherDate, err2 := time.Parse("2006-01-02", otherDateStr)
-
 		if err1 == nil && err2 == nil && !date.After(otherDate) {
 			dv.builder.addError(dv.field, "date must be after the reference date", ErrDateRange, dv.value)
 		}
@@ -234,7 +407,6 @@ func (dv *DateValidator[T]) Before(otherDateStr string) *DateValidator[T] {
 	if dv.value != "" && otherDateStr != "" {
 		date, err1 := time.Parse("2006-01-02", dv.value)
 		otherDate, err2 := time.Parse("2006-01-02", otherDateStr)
-
 		if err1 == nil && err2 == nil && !date.Before(otherDate) {
 			dv.builder.addError(dv.field, "date must be before the reference date", ErrDateRange, dv.value)
 		}
@@ -311,16 +483,10 @@ func (vs *ValidationService[T]) ValidateCollection(models []T) error {
 	return nil
 }
 
-var (
-	validatorOnce sync.Once
-	validatorInst *validator.Validate
-)
-
 // getValidator lazily initializes and returns a shared validator instance with custom rules.
 func getValidator() *validator.Validate {
 	validatorOnce.Do(func() {
 		validatorInst = validator.New()
-		// Allow "Present" end dates while still validating real dates.
 		_ = validatorInst.RegisterValidation("date_or_present", func(fl validator.FieldLevel) bool {
 			value := fl.Field().String()
 			if value == "" || value == "Present" {
@@ -373,10 +539,6 @@ func formatValidationMessage(err validator.FieldError) string {
 	}
 }
 
-// JSON utilities
 func MarshalJSON[T any](v T) ([]byte, error) {
 	return json.Marshal(v)
-}
-
-	return fmt.Errorf("%s: %w", prefix, err)
 }

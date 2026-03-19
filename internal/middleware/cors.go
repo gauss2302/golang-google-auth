@@ -24,14 +24,25 @@ func CORS() gin.HandlerFunc {
 			}
 		}
 
-		if allowOrigin == "" {
-			allowOrigin = "http://localhost:3000" // Default for development
+		if allowOrigin == "" && origin != "" {
+			// In development, you might want to allow the requesting origin
+			// In production, be more restrictive
+			allowOrigin = "http://localhost:3000"
 		}
 
+		// Set CORS headers
 		c.Header("Access-Control-Allow-Origin", allowOrigin)
+		
+		// CRITICAL: Must be "true" for cookies to work cross-origin
 		c.Header("Access-Control-Allow-Credentials", "true")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
-		c.Header("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+		
+		// Allow necessary headers including CSRF token
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, Accept, Origin, Cache-Control, X-Requested-With")
+		
+		// Expose headers that client needs to read
+		c.Header("Access-Control-Expose-Headers", "Content-Length, X-CSRF-Token")
+		
+		c.Header("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
 		c.Header("Access-Control-Max-Age", "86400")
 
 		if c.Request.Method == "OPTIONS" {

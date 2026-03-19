@@ -98,7 +98,19 @@ func (h *AuthHandler) handleMobileAuth(c *gin.Context, successStatus int) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid request",
+			"code":  "INVALID_REQUEST",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if req.IDToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "ID token is required",
+			"code":  "MISSING_ID_TOKEN",
+		})
 		return
 	}
 
@@ -107,7 +119,10 @@ func (h *AuthHandler) handleMobileAuth(c *gin.Context, successStatus int) {
 
 	authResult, err := h.authService.AuthenticateWithGoogleIDToken(c.Request.Context(), req.IDToken, userAgent, ipAddress)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid ID token"})
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Invalid or expired ID token",
+			"code":  "INVALID_ID_TOKEN",
+		})
 		return
 	}
 
@@ -186,14 +201,29 @@ func (h *AuthHandler) ExchangeAuthCode(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid request",
+			"code":  "INVALID_REQUEST",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	if req.AuthCode == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Auth code is required",
+			"code":  "MISSING_AUTH_CODE",
+		})
 		return
 	}
 
 	// Обмениваем временный код на результат аутентификации
 	authResult, err := h.authService.ExchangeAuthCode(req.AuthCode)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired auth code"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid or expired auth code",
+			"code":  "INVALID_AUTH_CODE",
+		})
 		return
 	}
 
@@ -206,10 +236,10 @@ func (h *AuthHandler) ExchangeAuthCode(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"user": authResult.User,
-		"tokens": gin.H{
-			"access_token": authResult.Tokens.AccessToken,
-			"session_id":   authResult.Tokens.SessionID,
-		},
+		"access_token": authResult.Tokens.AccessToken,
+		"expires_in":   int(service.AccessTokenDuration.Seconds()),
+		"session_id":   authResult.Tokens.SessionID,
+
 	})
 }
 
@@ -217,25 +247,38 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	userAgent := c.GetHeader("User-Agent")
 	ipAddress := c.ClientIP()
 
+	// Get refresh token from HTTP-only cookie
 	refreshToken, err := c.Cookie(h.refreshCookie.Name)
 	if err != nil || refreshToken == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Refresh token missing"})
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Refresh token missing",
+			"code":  "REFRESH_TOKEN_MISSING",
+		})
 		return
 	}
 
-	// Используем новый сервис для обновления токенов
 	tokenPair, err := h.authService.RefreshAccessToken(c.Request.Context(), refreshToken, userAgent, ipAddress)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
+		// Clear invalid refresh token cookie
+		h.clearRefreshTokenCookie(c)
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Invalid or expired refresh token",
+			"code":  "REFRESH_TOKEN_INVALID",
+		})
 		return
 	}
 
-	h.setRefreshTokenCookie(c, tokenPair.RefreshToken)
+	// If refresh token was rotated, update the cookie
+	if tokenPair.RefreshToken != refreshToken {
+		h.setRefreshTokenCookie(c, tokenPair.RefreshToken)
+	}
 
-	c.JSON(http.StatusOK, gin.H{"tokens": gin.H{
+	// Return new access token
+	c.JSON(http.StatusOK, gin.H{
 		"access_token": tokenPair.AccessToken,
+		"expires_in":   int(service.AccessTokenDuration.Seconds()),
 		"session_id":   tokenPair.SessionID,
-	}})
+	})
 }
 
 func (h *AuthHandler) Logout(c *gin.Context) {
@@ -250,10 +293,12 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		return
 	}
 
+	// Clear refresh token cookie
 	h.clearRefreshTokenCookie(c)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
 }
+
 
 func (h *AuthHandler) GetSessions(c *gin.Context) {
 	userID, exists := c.Get("user_id")
@@ -262,14 +307,26 @@ func (h *AuthHandler) GetSessions(c *gin.Context) {
 		return
 	}
 
-	// Используем новый сервис для получения сессий
 	sessions, err := h.authService.GetUserSessions(userID.(uuid.UUID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get sessions"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"sessions": sessions})
+	// Sanitize sessions before returning (remove sensitive data)
+	sanitizedSessions := make([]gin.H, len(sessions))
+	for i, session := range sessions {
+		sanitizedSessions[i] = gin.H{
+			"id":           session.ID,
+			"user_agent":   session.UserAgent,
+			"ip_address":   session.IPAddress,
+			"created_at":   session.CreatedAt,
+			"last_used_at": session.LastUsedAt,
+			"expires_at":   session.ExpiresAt,
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"sessions": sanitizedSessions})
 }
 
 func (h *AuthHandler) RevokeSession(c *gin.Context) {
@@ -285,7 +342,6 @@ func (h *AuthHandler) RevokeSession(c *gin.Context) {
 		return
 	}
 
-	// Проверяем, что сессия принадлежит пользователю
 	sessions, err := h.authService.GetUserSessions(userID.(uuid.UUID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify session"})
@@ -305,10 +361,15 @@ func (h *AuthHandler) RevokeSession(c *gin.Context) {
 		return
 	}
 
-	// Отзываем сессию
 	if err := h.authService.RevokeSession(sessionID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke session"})
 		return
+	}
+
+	// If revoking current session, clear cookie
+	currentSessionID, _ := c.Get("session_id")
+	if currentSessionID == sessionID {
+		h.clearRefreshTokenCookie(c)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Session revoked successfully"})
@@ -332,6 +393,30 @@ func (h *AuthHandler) RevokeAllSessions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "All sessions revoked successfully"})
 }
 
+func (h *AuthHandler) CheckAuthStatus(c *gin.Context) {
+	authenticated, _ := c.Get("authenticated")
+	if auth, ok := authenticated.(bool); ok && auth {
+		userID, _ := c.Get("user_id")
+		sessionID, _ := c.Get("session_id")
+		
+		c.JSON(http.StatusOK, gin.H{
+			"authenticated": true,
+			"user_id":       userID,
+			"session_id":    sessionID,
+		})
+		return
+	}
+
+	// Check if refresh token exists (can be used for silent refresh)
+	_, err := c.Cookie(h.refreshCookie.Name)
+	hasRefreshToken := err == nil
+
+	c.JSON(http.StatusOK, gin.H{
+		"authenticated":     false,
+		"has_refresh_token": hasRefreshToken,
+	})
+}
+
 func (h *AuthHandler) setRefreshTokenCookie(c *gin.Context, refreshToken string) {
 	cookie := &http.Cookie{
 		Name:     h.refreshCookie.Name,
@@ -339,24 +424,23 @@ func (h *AuthHandler) setRefreshTokenCookie(c *gin.Context, refreshToken string)
 		Path:     h.refreshCookie.Path,
 		Domain:   h.refreshCookie.Domain,
 		MaxAge:   int(service.RefreshTokenDuration.Seconds()),
-		HttpOnly: h.refreshCookie.HttpOnly,
+		HttpOnly: true,  // Cannot be accessed by JavaScript
 		Secure:   h.refreshCookie.Secure,
-		SameSite: h.refreshCookie.SameSite,
+		SameSite: http.SameSiteStrictMode, // CSRF protection
 	}
 
 	http.SetCookie(c.Writer, cookie)
 }
-
 func (h *AuthHandler) clearRefreshTokenCookie(c *gin.Context) {
 	cookie := &http.Cookie{
 		Name:     h.refreshCookie.Name,
 		Value:    "",
 		Path:     h.refreshCookie.Path,
 		Domain:   h.refreshCookie.Domain,
-		MaxAge:   -1,
-		HttpOnly: h.refreshCookie.HttpOnly,
+		MaxAge:   -1, // Delete cookie
+		HttpOnly: true,
 		Secure:   h.refreshCookie.Secure,
-		SameSite: h.refreshCookie.SameSite,
+		SameSite: http.SameSiteStrictMode,
 	}
 
 	http.SetCookie(c.Writer, cookie)
